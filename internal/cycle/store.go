@@ -86,6 +86,21 @@ func (s FileStore) WriteCycle(cycle domain.Cycle) (domain.Artifact, error) {
 	return s.WriteJSON(cycle.ID, "cycle-state", "cycle.json", cycle)
 }
 
+func (s FileStore) ReadJSON(cycleID, name string, target any) error {
+	path, err := s.Path(cycleID, name)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, target); err != nil {
+		return fmt.Errorf("decode artifact %s: %w", name, err)
+	}
+	return nil
+}
+
 func (s FileStore) HashExisting(kind, path string) (domain.Artifact, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

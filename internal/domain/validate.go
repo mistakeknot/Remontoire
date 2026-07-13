@@ -119,6 +119,26 @@ func validateMetric(m Metric) error {
 	if !finite(m.Baseline) || !finite(m.Target) {
 		return fmt.Errorf("metric baseline and target must be finite")
 	}
+	switch m.Source {
+	case MetricSourceWallDurationMS:
+		if m.Unit != "ms" {
+			return fmt.Errorf("metric unit must be ms for wall_duration_ms")
+		}
+		if !blank(m.JSONField) {
+			return fmt.Errorf("metric json_field must be empty for wall_duration_ms")
+		}
+	case MetricSourceStdoutJSON:
+		if blank(m.JSONField) {
+			return fmt.Errorf("metric json_field is required for stdout_json")
+		}
+		for _, r := range m.JSONField {
+			if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.') {
+				return fmt.Errorf("metric json_field contains an invalid character")
+			}
+		}
+	default:
+		return fmt.Errorf("metric source must be %q or %q", MetricSourceWallDurationMS, MetricSourceStdoutJSON)
+	}
 	switch m.Direction {
 	case DirectionMaximize:
 		if m.Target <= m.Baseline {

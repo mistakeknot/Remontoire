@@ -29,11 +29,13 @@
     "metric": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "unit", "direction", "baseline", "target"],
+      "required": ["name", "unit", "direction", "source", "json_field", "baseline", "target"],
       "properties": {
         "name": {"type": "string", "minLength": 1},
         "unit": {"type": "string", "minLength": 1},
         "direction": {"enum": ["maximize", "minimize"]},
+        "source": {"enum": ["wall_duration_ms", "stdout_json"]},
+        "json_field": {"type": "string"},
         "baseline": {"type": "number"},
         "target": {"type": "number"}
       }

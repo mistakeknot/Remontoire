@@ -24,7 +24,7 @@ func adapterCandidate() domain.Candidate {
 			Repository:    "/repo",
 			AllowedPaths:  []string{"internal/roadmap"},
 			Metric: domain.Metric{
-				Name: "parse_ms", Unit: "ms", Direction: domain.DirectionMinimize, Baseline: 100, Target: 80,
+				Name: "parse_ms", Unit: "ms", Direction: domain.DirectionMinimize, Source: domain.MetricSourceWallDurationMS, Baseline: 100, Target: 80,
 			},
 			Benchmark:         []string{"go", "test", "./internal/roadmap"},
 			Budget:            domain.Budget{MaxDurationSeconds: 300, MaxTurns: 5, MaxCostUSD: 2},

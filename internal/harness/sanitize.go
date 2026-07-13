@@ -80,3 +80,7 @@ func safeEnvironment() []string {
 	}
 	return result
 }
+
+func SafeEnvironment() []string {
+	return safeEnvironment()
+}

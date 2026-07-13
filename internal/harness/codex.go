@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -30,7 +32,7 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 		"--color=never", "--json", "-",
 	)
 	result, err := c.run(ctx, args, []byte(judgmentPrompt(sanitized)))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err
 	}
@@ -61,7 +63,7 @@ func (c Codex) Execute(ctx context.Context, request ExecutionRequest) (Execution
 		"--color=never", "--json", "-",
 	)
 	result, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return ExecutionReport{}, meta, err
 	}
@@ -91,7 +93,7 @@ func (c Codex) Review(ctx context.Context, request ReviewRequest) (domain.Review
 		"--color=never", "--json", "-",
 	)
 	result, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Review{}, meta, err
 	}
@@ -147,6 +149,17 @@ func decodeFile(path string, target any) error {
 	return nil
 }
 
+func LoadExecutionReport(path string, contract domain.EvidenceContract) (ExecutionReport, error) {
+	var report ExecutionReport
+	if err := decodeFile(path, &report); err != nil {
+		return ExecutionReport{}, err
+	}
+	if err := validateExecutionReport(report, contract); err != nil {
+		return ExecutionReport{}, err
+	}
+	return report, nil
+}
+
 func validateReview(review domain.Review, contractHash string) error {
 	if review.SchemaVersion != domain.ReviewSchemaV1 {
 		return fmt.Errorf("review schema_version must be %q", domain.ReviewSchemaV1)
@@ -161,4 +174,18 @@ func validateReview(review domain.Review, contractHash string) error {
 		return fmt.Errorf("review rationale and evidence are required")
 	}
 	return nil
+}
+
+func codexTurns(transcript []byte) int {
+	turns := 0
+	scanner := bufio.NewScanner(bytes.NewReader(transcript))
+	for scanner.Scan() {
+		var event struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) == nil && event.Type == "turn.started" {
+			turns++
+		}
+	}
+	return turns
 }

@@ -51,10 +51,12 @@ type ExecutionReport struct {
 }
 
 type Metadata struct {
-	Backend    string `json:"backend"`
-	Model      string `json:"model"`
-	Transcript []byte `json:"-"`
-	Stderr     []byte `json:"-"`
+	Backend    string  `json:"backend"`
+	Model      string  `json:"model"`
+	Turns      int     `json:"turns,omitempty"`
+	CostUSD    float64 `json:"cost_usd,omitempty"`
+	Transcript []byte  `json:"-"`
+	Stderr     []byte  `json:"-"`
 }
 
 type Backend interface {

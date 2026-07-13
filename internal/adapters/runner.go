@@ -74,7 +74,7 @@ func (r ExecRunner) Run(ctx context.Context, invocation Invocation) (Result, err
 	}
 
 	err := cmd.Run()
-	result := Result{Stdout: capture.stdoutBytes(), Stderr: capture.stderrBytes()}
+	result := Result{Stdout: capture.stdoutBytes(), Stderr: capture.stderrBytes(), ExitCode: -1}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}

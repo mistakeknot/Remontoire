@@ -43,6 +43,13 @@ const (
 	DirectionMinimize Direction = "minimize"
 )
 
+type MetricSource string
+
+const (
+	MetricSourceWallDurationMS MetricSource = "wall_duration_ms"
+	MetricSourceStdoutJSON     MetricSource = "stdout_json"
+)
+
 type Verdict string
 
 const (
@@ -59,11 +66,13 @@ type EvidenceRef struct {
 }
 
 type Metric struct {
-	Name      string    `json:"name"`
-	Unit      string    `json:"unit"`
-	Direction Direction `json:"direction"`
-	Baseline  float64   `json:"baseline"`
-	Target    float64   `json:"target"`
+	Name      string       `json:"name"`
+	Unit      string       `json:"unit"`
+	Direction Direction    `json:"direction"`
+	Source    MetricSource `json:"source"`
+	JSONField string       `json:"json_field"`
+	Baseline  float64      `json:"baseline"`
+	Target    float64      `json:"target"`
 }
 
 type Budget struct {
@@ -126,6 +135,18 @@ type Measurement struct {
 	StderrPath string        `json:"stderr_path,omitempty"`
 }
 
+type ExecutionRecord struct {
+	Backend      string    `json:"backend"`
+	Model        string    `json:"model,omitempty"`
+	WorktreePath string    `json:"worktree_path"`
+	BaseCommit   string    `json:"base_commit"`
+	StartedAt    time.Time `json:"started_at"`
+	CompletedAt  time.Time `json:"completed_at,omitempty"`
+	ChangedPaths []string  `json:"changed_paths,omitempty"`
+	Turns        int       `json:"turns,omitempty"`
+	CostUSD      float64   `json:"cost_usd,omitempty"`
+}
+
 type Review struct {
 	SchemaVersion string        `json:"schema_version"`
 	ContractHash  string        `json:"contract_hash"`
@@ -156,6 +177,7 @@ type Cycle struct {
 	ExperimentBeadID string            `json:"experiment_bead_id,omitempty"`
 	PromotionBeadID  string            `json:"promotion_bead_id,omitempty"`
 	Approval         *Approval         `json:"approval,omitempty"`
+	Execution        *ExecutionRecord  `json:"execution,omitempty"`
 	Measurement      *Measurement      `json:"measurement,omitempty"`
 	Review           *Review           `json:"review,omitempty"`
 	Artifacts        []Artifact        `json:"artifacts,omitempty"`

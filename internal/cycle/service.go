@@ -44,12 +44,24 @@ type Judge interface {
 	Judge(context.Context, harness.JudgmentRequest) (domain.Judgment, harness.Metadata, error)
 }
 
+type Executor interface {
+	Execute(context.Context, harness.ExecutionRequest) (harness.ExecutionReport, harness.Metadata, error)
+}
+
+type WorktreeManager interface {
+	Prepare(context.Context, string, string) (adapters.WorktreeInfo, error)
+	ChangedPaths(context.Context, string) ([]string, error)
+	Patch(context.Context, string, []string) ([]byte, error)
+}
+
 type Config struct {
 	Portfolio              string
 	ProjectDir             string
 	ArtifactRoot           string
 	JudgmentSchemaPath     string
+	ExecutionSchemaPath    string
 	RoadmapPath            string
+	WorktreeRoot           string
 	AllowedRepositoryRoots []string
 	MaxInputBytes          int
 	DiscoveryLimit         int
@@ -58,14 +70,17 @@ type Config struct {
 }
 
 type Service struct {
-	Config  Config
-	Kernel  Kernel
-	Backlog Backlog
-	Policy  Policy
-	Judge   Judge
-	Store   FileStore
-	Now     func() time.Time
-	NewID   func(time.Time) (string, error)
+	Config          Config
+	Kernel          Kernel
+	Backlog         Backlog
+	Policy          Policy
+	Judge           Judge
+	Executors       map[string]Executor
+	Worktrees       WorktreeManager
+	BenchmarkRunner adapters.Runner
+	Store           FileStore
+	Now             func() time.Time
+	NewID           func(time.Time) (string, error)
 }
 
 type Observation struct {

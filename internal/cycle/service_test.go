@@ -146,7 +146,7 @@ func selectedJudgment(t *testing.T, request harness.JudgmentRequest, repository 
 					Hypothesis:    "Roadmap parsing accounts for at least twenty percent of refresh time.",
 					Falsifier:     "Profiling shows parsing below twenty percent or the target is missed.",
 					Repository:    repository, AllowedPaths: []string{"internal/roadmap"},
-					Metric:         domain.Metric{Name: "refresh_ms", Unit: "ms", Direction: domain.DirectionMinimize, Baseline: 100, Target: 80},
+					Metric:         domain.Metric{Name: "refresh_ms", Unit: "ms", Direction: domain.DirectionMinimize, Source: domain.MetricSourceWallDurationMS, Baseline: 100, Target: 80},
 					Benchmark:      []string{"go", "test", "./internal/roadmap"},
 					Budget:         domain.Budget{MaxDurationSeconds: 600, MaxTurns: 6, MaxCostUSD: 2},
 					StopConditions: []string{"tests fail", "allowed path boundary crossed"}, Executor: "codex",

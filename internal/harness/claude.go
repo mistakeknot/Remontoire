@@ -37,8 +37,10 @@ func (c Claude) Judge(ctx context.Context, request JudgmentRequest) (domain.Judg
 		return domain.Judgment{}, meta, err
 	}
 	var judgment domain.Judgment
-	if err := decodeClaude(result.Stdout, &judgment); err != nil {
-		return domain.Judgment{}, meta, fmt.Errorf("claude judgment: %w", err)
+	turns, cost, decodeErr := decodeClaudeWithUsage(result.Stdout, &judgment)
+	meta.Turns, meta.CostUSD = turns, cost
+	if decodeErr != nil {
+		return domain.Judgment{}, meta, fmt.Errorf("claude judgment: %w", decodeErr)
 	}
 	if err := domain.ValidateJudgment(judgment); err != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("claude judgment policy: %w", err)
@@ -74,8 +76,10 @@ func (c Claude) Execute(ctx context.Context, request ExecutionRequest) (Executio
 		return ExecutionReport{}, meta, err
 	}
 	var report ExecutionReport
-	if err := decodeClaude(result.Stdout, &report); err != nil {
-		return ExecutionReport{}, meta, fmt.Errorf("claude execution: %w", err)
+	turns, cost, decodeErr := decodeClaudeWithUsage(result.Stdout, &report)
+	meta.Turns, meta.CostUSD = turns, cost
+	if decodeErr != nil {
+		return ExecutionReport{}, meta, fmt.Errorf("claude execution: %w", decodeErr)
 	}
 	if err := validateExecutionReport(report, request.Contract); err != nil {
 		return ExecutionReport{}, meta, err
@@ -103,8 +107,10 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 		return domain.Review{}, meta, err
 	}
 	var review domain.Review
-	if err := decodeClaude(result.Stdout, &review); err != nil {
-		return domain.Review{}, meta, err
+	turns, cost, decodeErr := decodeClaudeWithUsage(result.Stdout, &review)
+	meta.Turns, meta.CostUSD = turns, cost
+	if decodeErr != nil {
+		return domain.Review{}, meta, decodeErr
 	}
 	if err := validateReview(review, request.ContractHash); err != nil {
 		return domain.Review{}, meta, err
@@ -182,27 +188,34 @@ func schemaJSON(inline []byte, path string) (string, error) {
 }
 
 func decodeClaude(stdout []byte, target any) error {
+	_, _, err := decodeClaudeWithUsage(stdout, target)
+	return err
+}
+
+func decodeClaudeWithUsage(stdout []byte, target any) (int, float64, error) {
 	var envelope struct {
 		StructuredOutput json.RawMessage `json:"structured_output"`
 		Result           string          `json:"result"`
 		IsError          bool            `json:"is_error"`
 		Subtype          string          `json:"subtype"`
+		NumTurns         int             `json:"num_turns"`
+		TotalCostUSD     float64         `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(stdout, &envelope); err != nil {
-		return fmt.Errorf("decode result envelope: %w", err)
+		return 0, 0, fmt.Errorf("decode result envelope: %w", err)
 	}
 	if envelope.IsError || strings.Contains(envelope.Subtype, "error") {
-		return fmt.Errorf("claude returned an error result")
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("claude returned an error result")
 	}
 	payload := envelope.StructuredOutput
 	if len(payload) == 0 && envelope.Result != "" {
 		payload = json.RawMessage(envelope.Result)
 	}
 	if len(payload) == 0 {
-		return fmt.Errorf("claude result has no structured_output")
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("claude result has no structured_output")
 	}
 	if err := json.Unmarshal(payload, target); err != nil {
-		return fmt.Errorf("decode structured_output: %w", err)
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
 	}
-	return nil
+	return envelope.NumTurns, envelope.TotalCostUSD, nil
 }

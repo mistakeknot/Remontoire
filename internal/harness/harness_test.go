@@ -44,7 +44,7 @@ func harnessContract() domain.EvidenceContract {
 		Repository:    "/repo",
 		AllowedPaths:  []string{"internal/roadmap"},
 		Metric: domain.Metric{
-			Name: "refresh_ms", Unit: "ms", Direction: domain.DirectionMinimize, Baseline: 100, Target: 80,
+			Name: "refresh_ms", Unit: "ms", Direction: domain.DirectionMinimize, Source: domain.MetricSourceWallDurationMS, Baseline: 100, Target: 80,
 		},
 		Benchmark:         []string{"go", "test", "./internal/roadmap"},
 		Budget:            domain.Budget{MaxDurationSeconds: 600, MaxTurns: 6, MaxCostUSD: 2.5},
@@ -194,6 +194,8 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 		"type":              "result",
 		"subtype":           "success",
 		"structured_output": json.RawMessage(executionReportJSON()),
+		"num_turns":         4,
+		"total_cost_usd":    0.42,
 	}
 	stdout, err := json.Marshal(envelope)
 	if err != nil {
@@ -201,7 +203,7 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 	}
 	runner := &fakeRunner{responses: []adapters.Result{{Stdout: stdout}}}
 	backend := Claude{Binary: "claude", Model: "sonnet", Runner: runner}
-	report, _, err := backend.Execute(context.Background(), ExecutionRequest{
+	report, meta, err := backend.Execute(context.Background(), ExecutionRequest{
 		Worktree:   "/worktree",
 		SchemaJSON: []byte(`{"type":"object"}`),
 		Contract:   harnessContract(),
@@ -211,6 +213,9 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 	}
 	if !report.Completed {
 		t.Fatal("execution report was not parsed")
+	}
+	if meta.Turns != 4 || meta.CostUSD != 0.42 {
+		t.Fatalf("usage metadata = %#v", meta)
 	}
 	args := runner.calls[0].Args
 	allowed := findPrefix(args, "--allowedTools=")
