@@ -13,7 +13,7 @@ TimeoutStartSec=30min
 KillSignal=SIGTERM
 UMask=0077
 
-# Scheduled proposal cycles may write canonical state and roadmap outputs only.
+# Scheduled proposal cycles may write canonical state and cycle evidence only.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
