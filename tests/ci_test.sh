@@ -25,4 +25,7 @@ done
 
 grep -Fq -- 'permissions:' "${WORKFLOW}" || fail "workflow has no explicit permissions"
 grep -Fq -- 'contents: read' "${WORKFLOW}" || fail "workflow permissions are not read-only"
+grep -Fq -- 'uses: actions/checkout@v7' "${WORKFLOW}" || fail "workflow checkout action is not on the supported runtime"
+grep -Fq -- 'uses: actions/setup-go@v6' "${WORKFLOW}" || fail "workflow setup-go action is not on the supported runtime"
+grep -Fq -- 'cache: false' "${WORKFLOW}" || fail "workflow should not cache a module with no go.sum"
 printf 'ci_test: ok\n'
