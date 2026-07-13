@@ -7,6 +7,7 @@ const (
 	ContractSchemaV1 = "remontoire.evidence-contract/v1"
 	JudgmentSchemaV1 = "remontoire.judgment/v1"
 	ApprovalSchemaV1 = "remontoire.approval/v1"
+	DeclineSchemaV1  = "remontoire.decline/v1"
 	ReviewSchemaV1   = "remontoire.review/v1"
 	ReceiptSchemaV1  = "remontoire.receipt/v1"
 	OutcomeSchemaV1  = "remontoire.outcome/v1"
@@ -127,6 +128,15 @@ type Approval struct {
 	ApprovedAt    time.Time `json:"approved_at"`
 }
 
+type Decline struct {
+	SchemaVersion string    `json:"schema_version"`
+	CycleID       string    `json:"cycle_id"`
+	ContractHash  string    `json:"contract_hash"`
+	Actor         string    `json:"actor"`
+	Reason        string    `json:"reason"`
+	DeclinedAt    time.Time `json:"declined_at"`
+}
+
 type Measurement struct {
 	MetricName string        `json:"metric_name"`
 	Value      float64       `json:"value"`
@@ -206,6 +216,7 @@ type Cycle struct {
 	ExperimentBeadID string            `json:"experiment_bead_id,omitempty"`
 	PromotionBeadID  string            `json:"promotion_bead_id,omitempty"`
 	Approval         *Approval         `json:"approval,omitempty"`
+	Decline          *Decline          `json:"decline,omitempty"`
 	Execution        *ExecutionRecord  `json:"execution,omitempty"`
 	Measurement      *Measurement      `json:"measurement,omitempty"`
 	Review           *Review           `json:"review,omitempty"`
