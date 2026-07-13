@@ -1,0 +1,235 @@
+package harness
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/mistakeknot/Remontoire/internal/adapters"
+	"github.com/mistakeknot/Remontoire/internal/domain"
+)
+
+type fakeRunner struct {
+	calls     []adapters.Invocation
+	responses []adapters.Result
+}
+
+func (r *fakeRunner) Run(_ context.Context, invocation adapters.Invocation) (adapters.Result, error) {
+	r.calls = append(r.calls, invocation)
+	if len(r.responses) == 0 {
+		return adapters.Result{}, nil
+	}
+	result := r.responses[0]
+	r.responses = r.responses[1:]
+	return result, nil
+}
+
+func noOpJudgmentJSON() string {
+	return `{"schema_version":"remontoire.judgment/v1","opportunities":[],"selected_index":null,"no_op_reason":"No bounded evidence-backed opportunity."}`
+}
+
+func executionReportJSON() string {
+	return `{"schema_version":"remontoire.execution/v1","summary":"Added a benchmark fixture.","changed_paths":["internal/roadmap/cache_test.go"],"commands":["go test ./internal/roadmap"],"completed":true}`
+}
+
+func harnessContract() domain.EvidenceContract {
+	return domain.EvidenceContract{
+		SchemaVersion: domain.ContractSchemaV1,
+		Hypothesis:    "A cache reduces refresh time.",
+		Falsifier:     "The target is missed or tests fail.",
+		Repository:    "/repo",
+		AllowedPaths:  []string{"internal/roadmap"},
+		Metric: domain.Metric{
+			Name: "refresh_ms", Unit: "ms", Direction: domain.DirectionMinimize, Baseline: 100, Target: 80,
+		},
+		Benchmark:         []string{"go", "test", "./internal/roadmap"},
+		Budget:            domain.Budget{MaxDurationSeconds: 600, MaxTurns: 6, MaxCostUSD: 2.5},
+		StopConditions:    []string{"tests fail", "path boundary crossed"},
+		Executor:          "codex",
+		PromotionCriteria: "target met and tests pass",
+		ClosureCriteria:   "target missed or tests fail",
+	}
+}
+
+func TestSanitizeObservationRedactsSecretsAndBoundsInput(t *testing.T) {
+	raw := []byte(`{"title":"safe","api_token":"ghp_abcdefghijklmnopqrstuvwxyz1234567890","nested":{"password":"not-for-model","text":"key sk-abcdefghijklmnopqrstuvwxyz123456"}}`)
+	got, err := SanitizeObservation(raw, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	for _, forbidden := range []string{"ghp_", "not-for-model", "sk-abcdef"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("sanitized observation still contains %q: %s", forbidden, text)
+		}
+	}
+	if strings.Count(text, "[REDACTED]") < 3 {
+		t.Fatalf("expected redactions: %s", text)
+	}
+	if _, err := SanitizeObservation(raw, 8); err == nil {
+		t.Fatal("oversized observation was accepted")
+	}
+}
+
+func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "judgment.json")
+	if err := os.WriteFile(output, []byte(noOpJudgmentJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", Runner: runner}
+	request := JudgmentRequest{
+		WorkingDir:    "/repo",
+		SchemaPath:    "/schemas/judgment.json",
+		OutputPath:    output,
+		Observation:   []byte(`{"beads":[]}`),
+		MaxInputBytes: 4096,
+	}
+
+	judgment, meta, err := backend.Judge(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if judgment.NoOpReason == "" || meta.Backend != "codex" || meta.Model != "gpt-5.4" {
+		t.Fatalf("judgment/meta = %#v %#v", judgment, meta)
+	}
+	want := []string{
+		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+		"--sandbox=read-only", "--cd=/repo", "--model=gpt-5.4",
+		"--output-schema=/schemas/judgment.json", "--output-last-message=" + output,
+		"--color=never", "--json", "-",
+	}
+	if got := runner.calls[0].Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+	prompt := string(runner.calls[0].Stdin)
+	if !strings.Contains(prompt, "UNTRUSTED CANONICAL DATA") || !strings.Contains(prompt, "one selected P4") {
+		t.Fatalf("judge prompt missing safety contract: %s", prompt)
+	}
+}
+
+func TestCodexExecuteIsWorkspaceBoundAndDisablesToolNetwork(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "execution.json")
+	if err := os.WriteFile(output, []byte(executionReportJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", Runner: runner}
+	report, _, err := backend.Execute(context.Background(), ExecutionRequest{
+		Worktree:   "/worktree",
+		SchemaPath: "/schemas/execution.json",
+		OutputPath: output,
+		Contract:   harnessContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Completed {
+		t.Fatal("execution report was not parsed")
+	}
+	want := []string{
+		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+		"--sandbox=workspace-write", "--cd=/worktree", "--model=gpt-5.4",
+		"--config", `sandbox_workspace_write.network_access=false`,
+		"--config", `approval_policy="never"`,
+		"--output-schema=/schemas/execution.json", "--output-last-message=" + output,
+		"--color=never", "--json", "-",
+	}
+	if got := runner.calls[0].Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+	prompt := string(runner.calls[0].Stdin)
+	for _, required := range []string{"NEVER push", "Allowed paths", "internal/roadmap", "immutable evidence contract"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("execution prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestClaudeJudgeUsesReadOnlyToolsAndParsesStructuredEnvelope(t *testing.T) {
+	schema := `{"type":"object"}`
+	envelope := map[string]any{
+		"type":              "result",
+		"subtype":           "success",
+		"structured_output": json.RawMessage(noOpJudgmentJSON()),
+	}
+	stdout, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: stdout}}}
+	backend := Claude{Binary: "claude", Model: "sonnet", Runner: runner}
+	judgment, meta, err := backend.Judge(context.Background(), JudgmentRequest{
+		WorkingDir:    "/repo",
+		SchemaJSON:    []byte(schema),
+		Observation:   []byte(`{"beads":[]}`),
+		MaxInputBytes: 4096,
+		MaxBudgetUSD:  1.25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if judgment.NoOpReason == "" || meta.Backend != "claude" {
+		t.Fatalf("judgment/meta = %#v %#v", judgment, meta)
+	}
+	want := []string{
+		"-p", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
+		"--permission-mode=dontAsk", "--tools=Read,Glob,Grep", "--allowedTools=Read,Glob,Grep",
+		"--disallowedTools=Bash,Edit,Write,WebFetch,WebSearch,NotebookEdit",
+		"--model=sonnet", "--max-budget-usd=1.25", "--json-schema=" + schema, "--output-format=json",
+	}
+	if got := runner.calls[0].Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
+	envelope := map[string]any{
+		"type":              "result",
+		"subtype":           "success",
+		"structured_output": json.RawMessage(executionReportJSON()),
+	}
+	stdout, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: stdout}}}
+	backend := Claude{Binary: "claude", Model: "sonnet", Runner: runner}
+	report, _, err := backend.Execute(context.Background(), ExecutionRequest{
+		Worktree:   "/worktree",
+		SchemaJSON: []byte(`{"type":"object"}`),
+		Contract:   harnessContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Completed {
+		t.Fatal("execution report was not parsed")
+	}
+	args := runner.calls[0].Args
+	allowed := findPrefix(args, "--allowedTools=")
+	if !strings.Contains(allowed, "Bash(go *)") || strings.Contains(allowed, "Bash(git *)") || strings.Contains(allowed, "Bash(*)") {
+		t.Fatalf("unsafe Claude allowed tools: %s", allowed)
+	}
+	disallowed := findPrefix(args, "--disallowedTools=")
+	for _, tool := range []string{"WebFetch", "WebSearch"} {
+		if !strings.Contains(disallowed, tool) {
+			t.Fatalf("missing disallowed tool %s: %s", tool, disallowed)
+		}
+	}
+}
+
+func findPrefix(args []string, prefix string) string {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, prefix) {
+			return arg
+		}
+	}
+	return ""
+}

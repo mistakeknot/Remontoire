@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mistakeknot/Remontoire/schemas/execution-v1.json",
+  "title": "Remontoire experiment execution report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "summary", "changed_paths", "commands", "completed"],
+  "properties": {
+    "schema_version": {"const": "remontoire.execution/v1"},
+    "summary": {"type": "string", "minLength": 1},
+    "changed_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "commands": {"type": "array", "items": {"type": "string"}},
+    "completed": {"type": "boolean"}
+  }
+}
