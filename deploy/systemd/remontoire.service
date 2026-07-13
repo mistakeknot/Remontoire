@@ -1,7 +1,7 @@
 [Unit]
 Description=Remontoire portfolio proposal cycle
 Documentation=https://github.com/mistakeknot/Remontoire
-ConditionPathIsExecutable=%h/.local/bin/remontoire
+ConditionFileIsExecutable=%h/.local/bin/remontoire
 ConditionPathExists=%h/.config/remontoire/config.json
 
 [Service]

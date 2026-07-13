@@ -32,6 +32,7 @@ bash -n "${INSTALLER}"
 
 for setting in \
   'Type=oneshot' \
+  'ConditionFileIsExecutable=%h/.local/bin/remontoire' \
   'ExecStartPre=%h/.local/share/remontoire/wait-network.sh' \
   'cycle --mode=proposal --json' \
   'TimeoutStartSec=30min' \
