@@ -326,12 +326,17 @@ func (s *Service) validateExecution() error {
 
 func (s *Service) measure(ctx context.Context, cycle domain.Cycle) (domain.Measurement, []domain.Artifact, error) {
 	contract := cycle.Candidate.Contract
+	environment, cleanup, err := harness.SafeEnvironment()
+	if err != nil {
+		return domain.Measurement{}, nil, fmt.Errorf("benchmark environment: %w", err)
+	}
+	defer cleanup()
 	benchmarkCtx, cancel := context.WithTimeout(ctx, time.Duration(contract.Budget.MaxDurationSeconds)*time.Second)
 	defer cancel()
 	started := time.Now()
 	result, runErr := s.BenchmarkRunner.Run(benchmarkCtx, adapters.Invocation{
 		Name: contract.Benchmark[0], Args: contract.Benchmark[1:], Dir: cycle.Execution.WorktreePath,
-		Env: harness.SafeEnvironment(), MaxOutputBytes: 8 << 20,
+		Env: environment, MaxOutputBytes: 8 << 20,
 	})
 	duration := time.Since(started)
 	if runErr != nil && len(result.Stderr) == 0 {

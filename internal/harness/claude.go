@@ -152,8 +152,13 @@ func (c Claude) run(ctx context.Context, dir string, args []string, stdin []byte
 	if binary == "" {
 		binary = "claude"
 	}
+	environment, cleanup, err := safeEnvironment()
+	if err != nil {
+		return adapters.Result{}, fmt.Errorf("claude environment: %w", err)
+	}
+	defer cleanup()
 	result, err := c.Runner.Run(ctx, adapters.Invocation{
-		Name: binary, Args: args, Dir: dir, Stdin: stdin, Env: safeEnvironment(), MaxOutputBytes: 8 << 20,
+		Name: binary, Args: args, Dir: dir, Stdin: stdin, Env: environment, MaxOutputBytes: 8 << 20,
 	})
 	if err != nil {
 		return result, fmt.Errorf("claude backend: %w", err)

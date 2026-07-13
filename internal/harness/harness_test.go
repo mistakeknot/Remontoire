@@ -75,6 +75,96 @@ func TestSanitizeObservationRedactsSecretsAndBoundsInput(t *testing.T) {
 	}
 }
 
+func TestSafeEnvironmentRehomesCacheUnderTempDir(t *testing.T) {
+	originalEnviron := environ
+	t.Cleanup(func() { environ = originalEnviron })
+	tempDir := t.TempDir()
+	t.Setenv("TMPDIR", tempDir)
+	hostileTarget := t.TempDir()
+	hostilePath := filepath.Join(tempDir, "remontoire-cache-hostile")
+	if err := os.Symlink(hostileTarget, hostilePath); err != nil {
+		t.Fatal(err)
+	}
+	environ = func() []string {
+		return []string{
+			"HOME=/home/mk",
+			"PATH=/usr/local/go/bin:/usr/bin:/bin",
+			"XDG_CACHE_HOME=/home/mk/.cache",
+			"REMONTOIRE_SECRET=not-for-children",
+		}
+	}
+
+	environment, cleanup, err := safeEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	var cacheHome string
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, "REMONTOIRE_SECRET=") {
+			t.Fatalf("safe environment leaked secret: %s", entry)
+		}
+		if value, ok := strings.CutPrefix(entry, "XDG_CACHE_HOME="); ok {
+			cacheHome = value
+		}
+	}
+	if filepath.Dir(cacheHome) != tempDir || !strings.HasPrefix(filepath.Base(cacheHome), "remontoire-cache-") {
+		t.Fatalf("XDG_CACHE_HOME = %q, want process cache under %q", cacheHome, tempDir)
+	}
+	if cacheHome == hostilePath {
+		t.Fatalf("XDG_CACHE_HOME reused hostile path %q", hostilePath)
+	}
+	info, err := os.Lstat(cacheHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("cache mode = %v, want private directory 0700", info.Mode())
+	}
+
+	secondEnvironment, secondCleanup, err := safeEnvironment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondCleanup()
+	var secondCacheHome string
+	for _, entry := range secondEnvironment {
+		if value, ok := strings.CutPrefix(entry, "XDG_CACHE_HOME="); ok {
+			secondCacheHome = value
+		}
+	}
+	if secondCacheHome == cacheHome {
+		t.Fatalf("cache directory was reused across invocations: %q", cacheHome)
+	}
+
+	cleanup()
+	if _, err := os.Lstat(cacheHome); !os.IsNotExist(err) {
+		t.Fatalf("cache cleanup error = %v, want not exist", err)
+	}
+	if linkTarget, err := os.Readlink(hostilePath); err != nil || linkTarget != hostileTarget {
+		t.Fatalf("hostile path changed: target=%q error=%v", linkTarget, err)
+	}
+}
+
+func TestSafeEnvironmentRejectsUnusableTempDir(t *testing.T) {
+	originalEnviron := environ
+	t.Cleanup(func() { environ = originalEnviron })
+	tempFile := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(tempFile, []byte("occupied"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tempFile)
+	environ = func() []string { return []string{"HOME=/home/mk", "PATH=/usr/bin:/bin"} }
+
+	_, cleanup, err := safeEnvironment()
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatal("safe environment accepted an unusable temp directory")
+	}
+}
+
 func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 	dir := t.TempDir()
 	output := filepath.Join(dir, "judgment.json")

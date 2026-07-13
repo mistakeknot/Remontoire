@@ -3,6 +3,7 @@ package harness
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -64,7 +65,7 @@ func redactValue(value any) any {
 	}
 }
 
-func safeEnvironment() []string {
+func safeEnvironment() ([]string, func(), error) {
 	allowed := map[string]bool{
 		"CODEX_HOME": true, "HOME": true, "LANG": true, "LC_ALL": true,
 		"LOGNAME": true, "PATH": true, "SHELL": true, "TERM": true,
@@ -74,13 +75,19 @@ func safeEnvironment() []string {
 	result := make([]string, 0, len(allowed))
 	for _, entry := range environ() {
 		key, _, ok := strings.Cut(entry, "=")
-		if ok && allowed[key] {
+		if ok && allowed[key] && key != "XDG_CACHE_HOME" {
 			result = append(result, entry)
 		}
 	}
-	return result
+	cacheHome, err := os.MkdirTemp(os.TempDir(), "remontoire-cache-")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create sandbox cache: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(cacheHome) }
+	result = append(result, "XDG_CACHE_HOME="+cacheHome)
+	return result, cleanup, nil
 }
 
-func SafeEnvironment() []string {
+func SafeEnvironment() ([]string, func(), error) {
 	return safeEnvironment()
 }

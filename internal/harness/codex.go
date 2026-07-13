@@ -124,8 +124,13 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 	if binary == "" {
 		binary = "codex"
 	}
+	environment, cleanup, err := safeEnvironment()
+	if err != nil {
+		return adapters.Result{}, fmt.Errorf("codex environment: %w", err)
+	}
+	defer cleanup()
 	result, err := c.Runner.Run(ctx, adapters.Invocation{
-		Name: binary, Args: args, Stdin: stdin, Env: safeEnvironment(), MaxOutputBytes: 8 << 20,
+		Name: binary, Args: args, Stdin: stdin, Env: environment, MaxOutputBytes: 8 << 20,
 	})
 	if err != nil {
 		return result, fmt.Errorf("codex backend: %w", err)
