@@ -29,3 +29,29 @@ func TestRejectDuplicateKeysRejectsTrailingJSON(t *testing.T) {
 		t.Fatal("expected trailing JSON error")
 	}
 }
+
+func TestRejectNonExactFieldsRecursively(t *testing.T) {
+	type item struct {
+		Name string `json:"name"`
+	}
+	type payload struct {
+		Items []item `json:"items"`
+	}
+	var target payload
+	if err := RejectNonExactFields([]byte(`{"items":[{"name":"exact"}]}`), &target); err != nil {
+		t.Fatal(err)
+	}
+	if err := RejectNonExactFields([]byte(`{"items":[{"Name":"inexact"}]}`), &target); err == nil || !strings.Contains(err.Error(), "exact field") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRejectNonExactFieldsRejectsNullCollection(t *testing.T) {
+	type payload struct {
+		Items []string `json:"items"`
+	}
+	var target payload
+	if err := RejectNonExactFields([]byte(`{"items":null}`), &target); err == nil || !strings.Contains(err.Error(), "array") {
+		t.Fatalf("error = %v", err)
+	}
+}

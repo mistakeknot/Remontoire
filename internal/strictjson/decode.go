@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"strings"
 )
 
 // RejectDuplicateKeys validates one JSON value and rejects duplicate object keys.
@@ -19,6 +21,87 @@ func RejectDuplicateKeys(data []byte) error {
 			return fmt.Errorf("unexpected trailing JSON token %v", token)
 		}
 		return err
+	}
+	return nil
+}
+
+// RejectNonExactFields rejects object keys that do not exactly match the target's JSON field names.
+func RejectNonExactFields(data []byte, target any) error {
+	targetType := reflect.TypeOf(target)
+	if targetType == nil || targetType.Kind() != reflect.Pointer {
+		return fmt.Errorf("exact field validation target must be a pointer")
+	}
+	return rejectNonExactFields(json.RawMessage(data), targetType.Elem(), "$")
+}
+
+func rejectNonExactFields(data json.RawMessage, targetType reflect.Type, path string) error {
+	data = bytes.TrimSpace(data)
+	if targetType.Kind() == reflect.Pointer {
+		if bytes.Equal(data, []byte("null")) {
+			return nil
+		}
+		return rejectNonExactFields(data, targetType.Elem(), path)
+	}
+
+	switch targetType.Kind() {
+	case reflect.Struct:
+		if len(data) == 0 || data[0] != '{' {
+			return fmt.Errorf("expected JSON object at %s", path)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(data, &object); err != nil {
+			return err
+		}
+		fields := make(map[string]reflect.Type, targetType.NumField())
+		for i := 0; i < targetType.NumField(); i++ {
+			field := targetType.Field(i)
+			if !field.IsExported() {
+				continue
+			}
+			name, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+			if name == "-" {
+				continue
+			}
+			if name == "" {
+				name = field.Name
+			}
+			fields[name] = field.Type
+		}
+		for name, value := range object {
+			fieldType, ok := fields[name]
+			if !ok {
+				return fmt.Errorf("JSON object field %q is not an exact field at %s", name, path)
+			}
+			if err := rejectNonExactFields(value, fieldType, path+"."+name); err != nil {
+				return err
+			}
+		}
+	case reflect.Slice, reflect.Array:
+		if len(data) == 0 || data[0] != '[' {
+			return fmt.Errorf("expected JSON array at %s", path)
+		}
+		var values []json.RawMessage
+		if err := json.Unmarshal(data, &values); err != nil {
+			return err
+		}
+		for i, value := range values {
+			if err := rejectNonExactFields(value, targetType.Elem(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case reflect.Map:
+		if len(data) == 0 || data[0] != '{' {
+			return fmt.Errorf("expected JSON object at %s", path)
+		}
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(data, &values); err != nil {
+			return err
+		}
+		for name, value := range values {
+			if err := rejectNonExactFields(value, targetType.Elem(), path+"."+name); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

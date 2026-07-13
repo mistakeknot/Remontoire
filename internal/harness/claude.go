@@ -1,9 +1,11 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
+	"github.com/mistakeknot/Remontoire/internal/strictjson"
 )
 
 type Claude struct {
@@ -100,7 +103,7 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 	if err != nil {
 		return domain.Review{}, Metadata{}, err
 	}
-	args := c.readOnlyArgs(schema, request.MaxBudgetUSD)
+	args := c.reviewArgs(schema, request.MaxBudgetUSD)
 	result, err := c.run(ctx, request.WorkingDir, args, []byte(prompt))
 	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
@@ -125,6 +128,17 @@ func (c Claude) readOnlyArgs(schema string, maxBudget float64) []string {
 		"--tools=Read,Glob,Grep",
 		"--allowedTools=Read,Glob,Grep",
 		"--disallowedTools=Bash,Edit,Write,WebFetch,WebSearch,NotebookEdit",
+	}
+	return appendModelBudgetSchema(args, c.Model, maxBudget, schema)
+}
+
+func (c Claude) reviewArgs(schema string, maxBudget float64) []string {
+	args := []string{
+		"-p", "--safe-mode", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
+		"--permission-mode=dontAsk",
+		"--tools=",
+		"--allowedTools=",
+		"--disallowedTools=Read,Glob,Grep,Bash,Edit,Write,WebFetch,WebSearch,NotebookEdit",
 	}
 	return appendModelBudgetSchema(args, c.Model, maxBudget, schema)
 }
@@ -214,13 +228,45 @@ func decodeClaudeWithUsage(stdout []byte, target any) (int, float64, error) {
 	}
 	payload := envelope.StructuredOutput
 	if len(payload) == 0 && envelope.Result != "" {
-		payload = json.RawMessage(envelope.Result)
+		payload = json.RawMessage(strings.TrimSpace(envelope.Result))
+		if fenced, ok := loneJSONFence(envelope.Result); ok {
+			payload = fenced
+		}
 	}
 	if len(payload) == 0 {
 		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("claude result has no structured_output")
 	}
-	if err := json.Unmarshal(payload, target); err != nil {
+	if err := strictjson.RejectDuplicateKeys(payload); err != nil {
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+	}
+	if err := strictjson.RejectNonExactFields(payload, target); err != nil {
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple JSON values")
+		}
 		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
 	}
 	return envelope.NumTurns, envelope.TotalCostUSD, nil
+}
+
+func loneJSONFence(result string) (json.RawMessage, bool) {
+	trimmed := strings.TrimSpace(result)
+	for _, prefix := range []string{"```json\n", "```JSON\n", "```\n"} {
+		if !strings.HasPrefix(trimmed, prefix) || !strings.HasSuffix(trimmed, "\n```") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, prefix), "\n```"))
+		if payload == "" || strings.Contains(payload, "```") {
+			return nil, false
+		}
+		return json.RawMessage(payload), true
+	}
+	return nil, false
 }

@@ -36,6 +36,10 @@ func executionReportJSON() string {
 	return `{"schema_version":"remontoire.execution/v1","summary":"Added a benchmark fixture.","changed_paths":["internal/roadmap/cache_test.go"],"commands":["go test ./internal/roadmap"],"completed":true}`
 }
 
+func reviewJSON() string {
+	return `{"schema_version":"remontoire.review/v1","contract_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","verdict":"close_success","rationale":"The bounded evidence is internally consistent.","evidence":[{"kind":"measurement","id":"measurement.json","digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`
+}
+
 func harnessContract() domain.EvidenceContract {
 	return domain.EvidenceContract{
 		SchemaVersion: domain.ContractSchemaV1,
@@ -338,6 +342,137 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 		if !strings.Contains(disallowed, tool) {
 			t.Fatalf("missing disallowed tool %s: %s", tool, disallowed)
 		}
+	}
+}
+
+func TestClaudeReviewUsesSelfContainedEvidenceAndParsesLoneJSONFence(t *testing.T) {
+	envelope := map[string]any{
+		"type":      "result",
+		"subtype":   "success",
+		"result":    "```json\n" + reviewJSON() + "\n```",
+		"num_turns": 1,
+	}
+	stdout, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: stdout}}}
+	backend := Claude{Binary: "claude", Model: "opus", Runner: runner}
+	review, _, err := backend.Review(context.Background(), ReviewRequest{
+		WorkingDir:    "/worktree",
+		SchemaJSON:    []byte(`{"type":"object"}`),
+		Contract:      harnessContract(),
+		ContractHash:  strings.Repeat("a", 64),
+		Material:      []byte(`{"artifacts":[{"kind":"measurement","path":"/cycle/measurement.json","digest":"` + strings.Repeat("b", 64) + `"}]}`),
+		MaxInputBytes: 4096,
+		MaxBudgetUSD:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != domain.VerdictCloseSuccess {
+		t.Fatalf("review = %#v", review)
+	}
+	args := runner.calls[0].Args
+	if !containsArg(args, "--tools=") || !containsArg(args, "--allowedTools=") {
+		t.Fatalf("Claude review did not disable all tools: %#v", args)
+	}
+	disallowed := findPrefix(args, "--disallowedTools=")
+	for _, tool := range []string{"Read", "Glob", "Grep", "Bash", "Edit", "Write", "WebFetch", "WebSearch"} {
+		if !strings.Contains(disallowed, tool) {
+			t.Fatalf("Claude review did not disallow %s: %s", tool, disallowed)
+		}
+	}
+	prompt := string(runner.calls[0].Stdin)
+	for _, required := range []string{
+		"self-contained evidence package",
+		"Remontoire, not you, executed the benchmark",
+		"content-addressed citation keys, not signatures",
+		"Set id to that artifact path basename",
+		"including when your verdict is inconclusive",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("review prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestDecodeClaudeRejectsFencedJSONSurroundedByProse(t *testing.T) {
+	stdout, err := json.Marshal(map[string]any{
+		"type":    "result",
+		"subtype": "success",
+		"result":  "Review complete.\n```json\n" + reviewJSON() + "\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review domain.Review
+	if err := decodeClaude(stdout, &review); err == nil {
+		t.Fatal("Claude prose-wrapped fenced JSON was accepted")
+	}
+}
+
+func TestDecodeClaudeRejectsUnknownFieldsInFencedJSON(t *testing.T) {
+	payload := strings.Replace(reviewJSON(), `"contract_hash"`, `"unexpected":true,"contract_hash"`, 1)
+	stdout, err := json.Marshal(map[string]any{
+		"type":    "result",
+		"subtype": "success",
+		"result":  "```json\n" + payload + "\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review domain.Review
+	if err := decodeClaude(stdout, &review); err == nil || !strings.Contains(err.Error(), "exact field") {
+		t.Fatalf("error = %v, want inexact field rejection", err)
+	}
+}
+
+func TestDecodeClaudeRejectsDuplicateFieldsInFencedJSON(t *testing.T) {
+	payload := strings.Replace(reviewJSON(), `"contract_hash"`, `"contract_hash":"`+strings.Repeat("c", 64)+`","contract_hash"`, 1)
+	stdout, err := json.Marshal(map[string]any{
+		"type":    "result",
+		"subtype": "success",
+		"result":  "```json\n" + payload + "\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review domain.Review
+	if err := decodeClaude(stdout, &review); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("error = %v, want duplicate field rejection", err)
+	}
+}
+
+func TestDecodeClaudeRejectsCaseVariantFieldName(t *testing.T) {
+	payload := strings.Replace(reviewJSON(), `"schema_version"`, `"SCHEMA_VERSION"`, 1)
+	stdout, err := json.Marshal(map[string]any{
+		"type":    "result",
+		"subtype": "success",
+		"result":  "```json\n" + payload + "\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review domain.Review
+	if err := decodeClaude(stdout, &review); err == nil || !strings.Contains(err.Error(), "exact field") {
+		t.Fatalf("error = %v, want exact field rejection", err)
+	}
+}
+
+func TestDecodeClaudeRejectsCaseVariantDuplicateField(t *testing.T) {
+	payload := strings.Replace(reviewJSON(), `"verdict":"close_success"`, `"verdict":"close_success","VERDICT":"close_failure"`, 1)
+	stdout, err := json.Marshal(map[string]any{
+		"type":    "result",
+		"subtype": "success",
+		"result":  "```json\n" + payload + "\n```",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var review domain.Review
+	if err := decodeClaude(stdout, &review); err == nil || !strings.Contains(err.Error(), "exact field") {
+		t.Fatalf("error = %v, want case-variant duplicate rejection", err)
 	}
 }
 
