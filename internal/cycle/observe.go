@@ -44,8 +44,12 @@ func (s *Service) observe(ctx context.Context, cycle domain.Cycle) (Observation,
 	}
 	roadmapDigest := ""
 	if s.Config.RoadmapPath != "" {
-		artifact, err := s.Store.HashExisting("roadmap", s.Config.RoadmapPath)
+		data, err := os.ReadFile(s.Config.RoadmapPath)
 		if err == nil {
+			artifact, err := s.Store.WriteBytes(cycle.ID, "roadmap", "roadmap.json", data)
+			if err != nil {
+				return Observation{}, fmt.Errorf("snapshot roadmap: %w", err)
+			}
 			roadmapDigest = artifact.Digest
 			artifacts = append(artifacts, artifact)
 		} else if !os.IsNotExist(err) {

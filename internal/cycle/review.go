@@ -59,7 +59,9 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}
@@ -196,7 +198,7 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 	if err != nil {
 		return domain.Cycle{}, err
 	}
-	if cycle.Stage != domain.StageCompounding && cycle.Stage != domain.StageCompleted && cycle.Stage != domain.StageFailed {
+	if cycle.Stage != domain.StageCompounding && cycle.Stage != domain.StageCompleted && cycle.Stage != domain.StageFailed && cycle.Stage != domain.StageNoOp {
 		return cycle, fmt.Errorf("cycle %s is not ready to compound (stage %s)", cycle.ID, cycle.Stage)
 	}
 
@@ -205,7 +207,9 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}
@@ -216,6 +220,11 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 	}
 	if err := s.ensureStageEvent(ctx, &cycle); err != nil {
 		return cycle, err
+	}
+	if cycle.Stage == domain.StageNoOp {
+		if err := s.transition(ctx, &cycle, domain.StageCompleted); err != nil {
+			return cycle, err
+		}
 	}
 	if cycle.Stage == domain.StageCompleted && cycle.SignedReceiptID != "" {
 		if err := s.terminalizeRun(ctx, &cycle); err != nil {
@@ -254,15 +263,21 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 			digest, syncErr := s.Roadmap.Sync(ctx)
 			if syncErr != nil {
 				delete(cycle.IdempotencyKeys, "roadmap:sync")
-				_ = s.persist(context.WithoutCancel(ctx), &cycle)
+				cleanupCtx, cancel := boundedCleanupContext(ctx)
+				_ = s.persist(cleanupCtx, &cycle)
+				cancel()
 				return cycle, fmt.Errorf("regenerate roadmap: %w", syncErr)
 			}
 			if !canonicalSHA256(digest) {
 				return cycle, fmt.Errorf("roadmap digest must be a 64-character lowercase SHA-256 hex digest")
 			}
-			artifact, hashErr := s.Store.HashExisting("roadmap-output", s.Config.RoadmapPath)
-			if hashErr != nil {
-				return cycle, fmt.Errorf("hash regenerated roadmap: %w", hashErr)
+			data, readErr := os.ReadFile(s.Config.RoadmapPath)
+			if readErr != nil {
+				return cycle, fmt.Errorf("read regenerated roadmap: %w", readErr)
+			}
+			artifact, writeErr := s.Store.WriteBytes(cycle.ID, "roadmap-output", "roadmap-output.json", data)
+			if writeErr != nil {
+				return cycle, fmt.Errorf("snapshot regenerated roadmap: %w", writeErr)
 			}
 			if digest != artifact.Digest {
 				return cycle, fmt.Errorf("roadmap digest %q does not match generated artifact %q", digest, artifact.Digest)
@@ -580,8 +595,12 @@ func (s *Service) validateRoadmapArtifact(cycle domain.Cycle) error {
 	if roadmapArtifact == nil {
 		return fmt.Errorf("roadmap artifact is missing")
 	}
-	if filepath.Clean(roadmapArtifact.Path) != filepath.Clean(s.Config.RoadmapPath) {
-		return fmt.Errorf("roadmap artifact path does not match configured roadmap")
+	expectedPath, err := s.Store.Path(cycle.ID, "roadmap-output.json")
+	if err != nil {
+		return err
+	}
+	if roadmapArtifact.Path != expectedPath {
+		return fmt.Errorf("roadmap artifact is not the cycle-local snapshot")
 	}
 	if roadmapArtifact.Digest != cycle.RoadmapDigest {
 		return fmt.Errorf("roadmap artifact digest does not match canonical roadmap digest")

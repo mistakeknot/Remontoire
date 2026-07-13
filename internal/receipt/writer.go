@@ -15,6 +15,7 @@ import (
 var inputKinds = map[string]bool{
 	"beads": true, "discoveries": true, "interest-profile": true,
 	"ockham": true, "roadmap": true, "outcomes": true, "observation": true,
+	"proposal-backlog": true,
 }
 
 func Build(cycle domain.Cycle, terminalAt time.Time) (domain.Receipt, error) {

@@ -37,7 +37,9 @@ func (s *Service) Approve(ctx context.Context, cycleID, actor string) (cycle dom
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}
@@ -94,7 +96,9 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}
@@ -134,7 +138,11 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	executionCompleteAtStart := cycle.IdempotencyKeys["execution:attempt"] == "completed"
 	if cycle.IdempotencyKeys["execution:attempt"] != "started" && cycle.IdempotencyKeys["execution:attempt"] != "completed" {
 		if cycle.Execution == nil {
-			info, prepareErr := s.Worktrees.Prepare(ctx, cycle.Candidate.Contract.Repository, cycle.ID)
+			repository, resolveErr := s.resolveRepository(cycle.Candidate.Contract.Repository)
+			if resolveErr != nil {
+				return cycle, s.fail(ctx, &cycle, resolveErr)
+			}
+			info, prepareErr := s.Worktrees.Prepare(ctx, repository, cycle.ID)
 			if prepareErr != nil {
 				return cycle, s.fail(ctx, &cycle, fmt.Errorf("prepare worktree: %w", prepareErr))
 			}

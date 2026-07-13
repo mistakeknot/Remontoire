@@ -382,7 +382,7 @@ func TestRoadmapDigestMustBeCanonicalLowercaseSHA256(t *testing.T) {
 	}
 }
 
-func TestRoadmapIsReverifiedBeforeReceiptRecovery(t *testing.T) {
+func TestRoadmapSnapshotSurvivesExternalRegenerationBeforeReceiptRecovery(t *testing.T) {
 	service, kernel, _, _, roadmap := reviewedService(t, domain.VerdictCloseSuccess)
 	cycle := executeToReview(t, service)
 	if _, err := service.Review(context.Background(), cycle.ID); err != nil {
@@ -395,6 +395,37 @@ func TestRoadmapIsReverifiedBeforeReceiptRecovery(t *testing.T) {
 		t.Fatalf("cycle=%#v error=%v roadmap=%d receipts=%d", interrupted, err, roadmap.calls, kernel.receiptCalls)
 	}
 	if err := os.WriteFile(service.Config.RoadmapPath, []byte("# Mutated roadmap\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kernel.emitErr = nil
+
+	completed, err := service.Compound(context.Background(), cycle.ID)
+	if err != nil || completed.Stage != domain.StageCompleted || completed.SignedReceiptID == "" || kernel.receiptCalls != 2 {
+		t.Fatalf("completed=%#v error=%v receipt calls=%d", completed, err, kernel.receiptCalls)
+	}
+}
+
+func TestRoadmapSnapshotIsReverifiedBeforeReceiptRecovery(t *testing.T) {
+	service, kernel, _, _, _ := reviewedService(t, domain.VerdictCloseSuccess)
+	cycle := executeToReview(t, service)
+	if _, err := service.Review(context.Background(), cycle.ID); err != nil {
+		t.Fatal(err)
+	}
+	kernel.emitErr = errors.New("receipt service unavailable")
+	interrupted, err := service.Compound(context.Background(), cycle.ID)
+	if err == nil {
+		t.Fatal("expected receipt interruption")
+	}
+	var snapshot domain.Artifact
+	for _, artifact := range interrupted.Artifacts {
+		if artifact.Kind == "roadmap-output" {
+			snapshot = artifact
+		}
+	}
+	if snapshot.Path == "" || snapshot.Path == service.Config.RoadmapPath {
+		t.Fatalf("roadmap snapshot = %#v", snapshot)
+	}
+	if err := os.WriteFile(snapshot.Path, []byte("# Mutated snapshot\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	kernel.emitErr = nil
@@ -889,6 +920,29 @@ func TestFailedCycleCanBeSignedWithoutCompoundingMutations(t *testing.T) {
 	}
 	if receipt.Cycle.Stage != domain.StageFailed || receipt.Cycle.Failure != failed.Failure {
 		t.Fatalf("receipt cycle = %#v", receipt.Cycle)
+	}
+}
+
+func TestInterruptedNoOpCanCompleteAndSignOnCompound(t *testing.T) {
+	service, kernel, _ := testService(t, domain.ModeShadow)
+	service.Judge = dynamicJudge{call: func(harness.JudgmentRequest) domain.Judgment {
+		return domain.Judgment{SchemaVersion: domain.JudgmentSchemaV1, NoOpReason: "No bounded opportunity."}
+	}}
+	cycle, err := service.Start(context.Background(), domain.ModeShadow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle.Stage = domain.StageNoOp
+	cycle.SignedReceiptID = ""
+	delete(cycle.IdempotencyKeys, "event:completed")
+	kernel.cycles[cycle.ID] = cycle
+
+	signed, err := service.Compound(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed.Stage != domain.StageCompleted || signed.SignedReceiptID == "" || kernel.receiptCalls != 1 {
+		t.Fatalf("signed=%#v receipt calls=%d", signed, kernel.receiptCalls)
 	}
 }
 

@@ -30,7 +30,9 @@ func (s *Service) Decline(ctx context.Context, cycleID, actor, reason string) (c
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}

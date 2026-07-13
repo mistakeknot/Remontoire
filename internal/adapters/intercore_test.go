@@ -64,6 +64,7 @@ func TestIntercoreLockHeldIsTyped(t *testing.T) {
 
 func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 	runner := &recordingRunner{}
+	runner.queue(`[]`)
 	runner.queue(`{"id":"run-123"}`)
 	runner.queue("42\n")
 	runner.queue("event-7\n")
@@ -93,6 +94,7 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 	}
 
 	wantCalls := [][]string{
+		{"--json", "run", "list", "--scope=cycle-1"},
 		{"--json", "run", "create", "--project=/repo", "--goal=Remontoire portfolio cycle cycle-1", "--scope-id=cycle-1", `--phases=["observe","rank","propose","execute","review","compound"]`, `--metadata={"mode":"proposal"}`},
 		{"run", "replay", "record", "run-123", "--kind=beads", "--key=beads.json", `--payload={"sha256":"abc"}`, "--artifact-ref=.remontoire/cycles/cycle-1/beads.json"},
 		{"events", "record", "--source=interspect", "--type=remontoire.stage", "--run=run-123", "--project=/repo", "--idempotency-key=remontoire:cycle-1:observing", `--payload={"agent_name":"remontoire","context":"{\"cycle_id\":\"cycle-1\",\"stage\":\"observing\"}"}`},
@@ -102,6 +104,49 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 		if got := runner.calls[i].Invocation.Args; !reflect.DeepEqual(got, want) {
 			t.Errorf("call %d args = %#v, want %#v", i, got, want)
 		}
+	}
+}
+
+func TestIntercoreCreateCycleRunReconcilesCommittedAmbiguousResponse(t *testing.T) {
+	existing := `[{"id":"run-123","project_dir":"/repo","goal":"Remontoire portfolio cycle cycle-1","status":"active","phase":"observe","scope_id":"cycle-1","phases":["observe","rank","propose","execute","review","compound"],"metadata":"{\"mode\":\"proposal\",\"portfolio\":\"sylveste\"}"}]`
+	for name, response := range map[string]queuedResponse{
+		"commit then timeout": {Err: context.DeadlineExceeded},
+		"malformed response":  {Result: Result{Stdout: []byte(`{"id":`)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &recordingRunner{}
+			runner.queue(`[]`)
+			runner.responses = append(runner.responses, response)
+			runner.queue(existing)
+			ic := Intercore{Binary: "ic", Dir: "/portfolio", Runner: runner}
+
+			id, err := ic.CreateCycleRun(context.Background(), "/repo", "cycle-1", map[string]any{"mode": "proposal", "portfolio": "sylveste"})
+			if err != nil || id != "run-123" {
+				t.Fatalf("id=%q error=%v", id, err)
+			}
+			if len(runner.calls) != 3 || !reflect.DeepEqual(runner.calls[2].Invocation.Args, []string{"--json", "run", "list", "--scope=cycle-1"}) {
+				t.Fatalf("calls = %#v", runner.calls)
+			}
+		})
+	}
+}
+
+func TestIntercoreCreateCycleRunRejectsDuplicateOrMismatchedScope(t *testing.T) {
+	for name, listing := range map[string]string{
+		"duplicate": `[{"id":"run-1"},{"id":"run-2"}]`,
+		"mismatch":  `[{"id":"run-1","project_dir":"/outside","scope_id":"cycle-1"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &recordingRunner{}
+			runner.queue(listing)
+			ic := Intercore{Binary: "ic", Runner: runner}
+			if _, err := ic.CreateCycleRun(context.Background(), "/repo", "cycle-1", map[string]any{"mode": "proposal"}); err == nil {
+				t.Fatal("expected scope reconciliation error")
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("create ran after unsafe scope lookup: %d calls", len(runner.calls))
+			}
+		})
 	}
 }
 

@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "portfolio": "sylveste",
+  "project_dir": "/home/mk/projects",
+  "artifact_root": "/home/mk/projects/Sylveste/os/Remontoire/.remontoire",
+  "worktree_root": "/home/mk/projects/.worktrees/remontoire",
+  "allowed_repository_roots": [
+    "/home/mk/projects"
+  ],
+  "judgment_schema_path": "/home/mk/projects/Sylveste/os/Remontoire/schemas/judgment-v1.json",
+  "execution_schema_path": "/home/mk/projects/Sylveste/os/Remontoire/schemas/execution-v1.json",
+  "review_schema_path": "/home/mk/projects/Sylveste/os/Remontoire/schemas/review-v1.json",
+  "roadmap_script_path": "/home/mk/projects/Sylveste/scripts/sync-roadmap-json.sh",
+  "roadmap_path": "/home/mk/projects/Sylveste/docs/roadmap.json",
+  "default_mode": "proposal",
+  "judge_backend": "codex",
+  "reviewer_backend": "claude",
+  "max_input_bytes": 1048576,
+  "discovery_limit": 100,
+  "lock_timeout": "0s",
+  "intercore_binary": "ic",
+  "beads_binary": "bd",
+  "ockham_binary": "ockham",
+  "git_binary": "git",
+  "bash_binary": "bash",
+  "codex_binary": "codex",
+  "codex_model": "",
+  "claude_binary": "claude",
+  "claude_model": ""
+}

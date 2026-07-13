@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mistakeknot/Remontoire/internal/domain"
 )
@@ -128,6 +130,11 @@ func (c Intercore) CreateCycleRun(ctx context.Context, project, cycleID string, 
 	if err != nil {
 		return "", fmt.Errorf("marshal run metadata: %w", err)
 	}
+	if existing, err := c.findCycleRun(ctx, project, cycleID, metadataJSON); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return "", err
+	}
 	result, err := c.run(ctx, nil,
 		"--json", "run", "create",
 		"--project="+project,
@@ -137,18 +144,68 @@ func (c Intercore) CreateCycleRun(ctx context.Context, project, cycleID string, 
 		"--metadata="+string(metadataJSON),
 	)
 	if err != nil {
-		return "", err
+		return c.reconcileCycleRun(ctx, project, cycleID, metadataJSON, err)
 	}
 	var payload struct {
 		ID string `json:"id"`
 	}
 	if err := json.Unmarshal(result.Stdout, &payload); err != nil {
-		return "", fmt.Errorf("decode run create: %w", err)
+		return c.reconcileCycleRun(ctx, project, cycleID, metadataJSON, fmt.Errorf("decode run create: %w", err))
 	}
 	if payload.ID == "" {
-		return "", fmt.Errorf("run create returned no id")
+		return c.reconcileCycleRun(ctx, project, cycleID, metadataJSON, fmt.Errorf("run create returned no id"))
 	}
 	return payload.ID, nil
+}
+
+func (c Intercore) reconcileCycleRun(ctx context.Context, project, cycleID string, metadataJSON []byte, cause error) (string, error) {
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	id, err := c.findCycleRun(lookupCtx, project, cycleID, metadataJSON)
+	if err == nil {
+		return id, nil
+	}
+	if errors.Is(err, ErrNotFound) {
+		return "", cause
+	}
+	return "", errors.Join(cause, fmt.Errorf("reconcile run create: %w", err))
+}
+
+func (c Intercore) findCycleRun(ctx context.Context, project, cycleID string, metadataJSON []byte) (string, error) {
+	result, err := c.run(ctx, nil, "--json", "run", "list", "--scope="+cycleID)
+	if err != nil {
+		return "", fmt.Errorf("list cycle runs: %w", err)
+	}
+	var runs []struct {
+		ID         string   `json:"id"`
+		ProjectDir string   `json:"project_dir"`
+		Goal       string   `json:"goal"`
+		Status     string   `json:"status"`
+		Phase      string   `json:"phase"`
+		ScopeID    string   `json:"scope_id"`
+		Phases     []string `json:"phases"`
+		Metadata   string   `json:"metadata"`
+	}
+	if err := json.Unmarshal(result.Stdout, &runs); err != nil {
+		return "", fmt.Errorf("decode cycle run list: %w", err)
+	}
+	if len(runs) == 0 {
+		return "", ErrNotFound
+	}
+	if len(runs) != 1 {
+		return "", fmt.Errorf("cycle scope %q has %d runs", cycleID, len(runs))
+	}
+	run := runs[0]
+	wantPhases := []string{"observe", "rank", "propose", "execute", "review", "compound"}
+	var gotMetadata, wantMetadata any
+	gotMetadataErr := json.Unmarshal([]byte(run.Metadata), &gotMetadata)
+	wantMetadataErr := json.Unmarshal(metadataJSON, &wantMetadata)
+	if run.ID == "" || run.ProjectDir != project || run.Goal != "Remontoire portfolio cycle "+cycleID || run.ScopeID != cycleID ||
+		run.Status != "active" || run.Phase != "observe" || !reflect.DeepEqual(run.Phases, wantPhases) ||
+		gotMetadataErr != nil || wantMetadataErr != nil || !reflect.DeepEqual(gotMetadata, wantMetadata) {
+		return "", fmt.Errorf("cycle scope %q has a run with mismatched authority metadata", cycleID)
+	}
+	return run.ID, nil
 }
 
 func (c Intercore) AdvanceRun(ctx context.Context, runID string) error {

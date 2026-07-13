@@ -89,6 +89,20 @@ Each input is stored as an artifact, hashed with SHA-256, and registered as an
 Intercore replay input. Volatile command output is never silently re-read during
 replay.
 
+Proposal deduplication performs a later backlog reconciliation read. When that
+read resolves a duplicate fingerprint, Remontoire snapshots it separately as
+`proposal-backlog.json`, registers its digest as a replay input, and binds the
+duplicate no-op reason to that snapshot. Recovery consumes the stored snapshot
+before attempting another live read.
+
+Offline `receipt replay` verifies stored-content self-consistency: artifact
+digests, observation component bindings, evidence identities, ranking, selected
+contract, and decision hash. It does not verify Intercore receipt authenticity;
+that verification remains an online Intercore operation because v0.1 does not
+persist a portable signed envelope or verification key. The JSON result reports
+this boundary as `verification_scope=stored-content-self-consistency` and
+`signature_verified=false`.
+
 ## Portfolio Judgment
 
 The judge backend receives the observation envelope as untrusted data and must

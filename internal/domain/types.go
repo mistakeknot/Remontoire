@@ -210,6 +210,7 @@ type Cycle struct {
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
 	Judgment         *Judgment         `json:"judgment,omitempty"`
+	NoOpReason       string            `json:"no_op_reason,omitempty"`
 	Candidate        *Candidate        `json:"candidate,omitempty"`
 	CandidateHash    string            `json:"candidate_hash,omitempty"`
 	ContractHash     string            `json:"contract_hash,omitempty"`

@@ -30,16 +30,18 @@ func (e *fakeExecutor) Execute(_ context.Context, _ harness.ExecutionRequest) (h
 }
 
 type fakeWorktrees struct {
-	info    adapters.WorktreeInfo
-	paths   []string
-	patch   []byte
-	prepare int
-	changed int
-	patched int
+	info       adapters.WorktreeInfo
+	paths      []string
+	patch      []byte
+	prepare    int
+	repository string
+	changed    int
+	patched    int
 }
 
-func (w *fakeWorktrees) Prepare(context.Context, string, string) (adapters.WorktreeInfo, error) {
+func (w *fakeWorktrees) Prepare(_ context.Context, repository, _ string) (adapters.WorktreeInfo, error) {
 	w.prepare++
+	w.repository = repository
 	return w.info, nil
 }
 func (w *fakeWorktrees) ChangedPaths(context.Context, string) ([]string, error) {
@@ -144,6 +146,40 @@ func TestExecuteRejectsStaleApprovalHash(t *testing.T) {
 	}
 	if executor.calls != 0 {
 		t.Fatal("executor ran with stale approval")
+	}
+}
+
+func TestExecuteRejectsRepositorySymlinkEscapeAfterApproval(t *testing.T) {
+	service, _, _, executor, worktrees, _ := executionService(t)
+	link := filepath.Join(filepath.Dir(service.Config.ProjectDir), "approved-repository")
+	if err := os.Symlink(service.Config.ProjectDir, link); err != nil {
+		t.Fatal(err)
+	}
+	service.Judge = dynamicJudge{call: func(request harness.JudgmentRequest) domain.Judgment {
+		judgment := selectedJudgment(t, request, link)
+		return judgment
+	}}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.Execute(context.Background(), cycle.ID)
+	if err == nil || !strings.Contains(err.Error(), "outside allowed repository roots") {
+		t.Fatalf("error = %v", err)
+	}
+	if worktrees.prepare != 0 || executor.calls != 0 {
+		t.Fatalf("worktree prepares=%d executor calls=%d repository=%q", worktrees.prepare, executor.calls, worktrees.repository)
 	}
 }
 

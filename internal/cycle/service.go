@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -15,7 +14,14 @@ import (
 	"github.com/mistakeknot/Remontoire/internal/harness"
 )
 
-const ObservationSchemaV1 = "remontoire.observation/v1"
+const (
+	ObservationSchemaV1 = "remontoire.observation/v1"
+	cleanupTimeout      = 15 * time.Second
+)
+
+func boundedCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
+}
 
 type Kernel interface {
 	Health(context.Context) error
@@ -143,20 +149,17 @@ func (s *Service) Start(ctx context.Context, mode domain.Mode) (cycle domain.Cyc
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), s.Config.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, s.Config.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = fmt.Errorf("release cycle lock: %w", releaseErr)
 		}
 	}()
 
-	runID, err := s.Kernel.CreateCycleRun(ctx, s.Config.ProjectDir, cycleID, map[string]any{"mode": mode, "portfolio": s.Config.Portfolio})
-	if err != nil {
-		return domain.Cycle{}, fmt.Errorf("create intercore run: %w", err)
-	}
 	cycle = domain.Cycle{
 		SchemaVersion:   domain.CycleSchemaV1,
 		ID:              cycleID,
-		RunID:           runID,
 		Portfolio:       s.Config.Portfolio,
 		Mode:            mode,
 		Stage:           domain.StageNew,
@@ -170,84 +173,10 @@ func (s *Service) Start(ctx context.Context, mode domain.Mode) (cycle domain.Cyc
 	if err := s.Kernel.SetLatestCycle(ctx, cycle.Portfolio, cycle.ID); err != nil {
 		return cycle, fmt.Errorf("set latest cycle: %w", err)
 	}
-	if err := s.transition(ctx, &cycle, domain.StageObserving); err != nil {
+	if err := s.ensureCycleRun(ctx, &cycle); err != nil {
 		return cycle, err
 	}
-
-	observation, err := s.observe(ctx, cycle)
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	observationJSON, err := json.Marshal(observation)
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	cycle.Artifacts = append(cycle.Artifacts, observation.Artifacts...)
-	observationArtifact, err := s.Store.WriteBytes(cycle.ID, "observation", "observation.json", append(observationJSON, '\n'))
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	cycle.Artifacts = append(cycle.Artifacts, observationArtifact)
-	replayPayload, _ := json.Marshal(map[string]string{"sha256": observationArtifact.Digest})
-	if err := s.Kernel.RecordReplayInput(ctx, cycle.RunID, observationArtifact.Kind, "observation.json", string(replayPayload), observationArtifact.Path); err != nil {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("register composite observation: %w", err))
-	}
-	if err := s.persist(ctx, &cycle); err != nil {
-		return cycle, err
-	}
-	outputPath, err := s.Store.Path(cycle.ID, "judgment.json")
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	judgment, _, err := s.Judge.Judge(ctx, harness.JudgmentRequest{
-		WorkingDir: s.Config.ProjectDir, SchemaPath: s.Config.JudgmentSchemaPath,
-		OutputPath: outputPath, Observation: observationJSON, MaxInputBytes: s.Config.MaxInputBytes,
-	})
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("portfolio judgment: %w", err))
-	}
-	if err := domain.ValidateJudgment(judgment); err != nil {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("portfolio judgment: %w", err))
-	}
-	if err := validateEvidenceBindings(judgment, observation); err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	if err := validateSelectedRanking(judgment); err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	judgmentArtifact, err := s.Store.WriteJSON(cycle.ID, "judgment", "judgment.json", judgment)
-	if err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	cycle.Artifacts = append(cycle.Artifacts, judgmentArtifact)
-	cycle.Judgment = &judgment
-	if judgment.SelectedIndex != nil {
-		candidate := judgment.Opportunities[*judgment.SelectedIndex]
-		if err := s.validateRepository(candidate.Contract.Repository); err != nil {
-			return cycle, s.fail(ctx, &cycle, err)
-		}
-		contractHash, err := domain.HashContract(candidate.Contract)
-		if err != nil {
-			return cycle, s.fail(ctx, &cycle, err)
-		}
-		cycle.Candidate = &candidate
-		cycle.CandidateHash = domain.FingerprintCandidate(candidate)
-		cycle.ContractHash = contractHash
-	}
-	if err := s.advanceOnce(ctx, &cycle, "run:rank", "observe", "rank"); err != nil {
-		return cycle, s.fail(ctx, &cycle, err)
-	}
-	if err := s.transition(ctx, &cycle, domain.StageRanked); err != nil {
-		return cycle, err
-	}
-
-	if judgment.SelectedIndex == nil {
-		return s.completeNoOp(ctx, &cycle, judgment.NoOpReason)
-	}
-	if mode == domain.ModeShadow {
-		return s.completeNoOp(ctx, &cycle, "shadow mode: proposal recorded without backlog mutation")
-	}
-	return s.ensureProposal(ctx, &cycle)
+	return s.continueObservation(ctx, &cycle)
 }
 
 func (s *Service) ResumeProposal(ctx context.Context, cycleID string) (cycle domain.Cycle, err error) {
@@ -263,7 +192,9 @@ func (s *Service) ResumeProposal(ctx context.Context, cycleID string) (cycle dom
 		return domain.Cycle{}, err
 	}
 	defer func() {
-		releaseErr := s.Kernel.ReleaseCycleLock(context.WithoutCancel(ctx), cycle.Portfolio, owner)
+		cleanupCtx, cancel := boundedCleanupContext(ctx)
+		defer cancel()
+		releaseErr := s.Kernel.ReleaseCycleLock(cleanupCtx, cycle.Portfolio, owner)
 		if err == nil && releaseErr != nil {
 			err = releaseErr
 		}
