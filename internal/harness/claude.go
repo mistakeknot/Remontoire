@@ -103,22 +103,59 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 	if err != nil {
 		return domain.Review{}, Metadata{}, err
 	}
-	args := c.reviewArgs(schema, request.MaxBudgetUSD)
+	maxBudget := request.MaxBudgetUSD
+	if maxBudget <= 0 {
+		maxBudget = 1
+	}
+	review, meta, retryable, reviewErr := c.reviewAttempt(ctx, request, schema, prompt, maxBudget)
+	if reviewErr == nil || !retryable || meta.CostUSD <= 0 || meta.CostUSD >= maxBudget {
+		return review, meta, reviewErr
+	}
+
+	repairPrompt := prompt + `
+
+The previous response failed deterministic schema validation. Retry once from the same evidence package. Return only the exact five-field object shown above; do not reuse an invalid shape.`
+	repaired, repairMeta, _, repairErr := c.reviewAttempt(ctx, request, schema, repairPrompt, maxBudget-meta.CostUSD)
+	meta = combineMetadata(meta, repairMeta)
+	if repairErr != nil {
+		return domain.Review{}, meta, fmt.Errorf("claude review repair failed after %v: %w", reviewErr, repairErr)
+	}
+	return repaired, meta, nil
+}
+
+func (c Claude) reviewAttempt(ctx context.Context, request ReviewRequest, schema, prompt string, budget float64) (domain.Review, Metadata, bool, error) {
+	args := c.reviewArgs(schema, budget)
 	result, err := c.run(ctx, request.WorkingDir, args, []byte(prompt))
 	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
-		return domain.Review{}, meta, err
+		return domain.Review{}, meta, false, err
 	}
 	var review domain.Review
 	turns, cost, decodeErr := decodeClaudeWithUsage(result.Stdout, &review)
 	meta.Turns, meta.CostUSD = turns, cost
 	if decodeErr != nil {
-		return domain.Review{}, meta, decodeErr
+		return domain.Review{}, meta, true, decodeErr
 	}
 	if err := ValidateReview(review, request.ContractHash); err != nil {
-		return domain.Review{}, meta, err
+		return domain.Review{}, meta, true, err
 	}
-	return review, meta, nil
+	return review, meta, false, nil
+}
+
+func combineMetadata(first, second Metadata) Metadata {
+	first.Turns += second.Turns
+	first.CostUSD += second.CostUSD
+	first.Transcript = appendAttempt(first.Transcript, second.Transcript)
+	first.Stderr = appendAttempt(first.Stderr, second.Stderr)
+	return first
+}
+
+func appendAttempt(first, second []byte) []byte {
+	combined := append([]byte(nil), first...)
+	if len(combined) > 0 && combined[len(combined)-1] != '\n' && len(second) > 0 {
+		combined = append(combined, '\n')
+	}
+	return append(combined, second...)
 }
 
 func (c Claude) readOnlyArgs(schema string, maxBudget float64) []string {

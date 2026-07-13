@@ -132,6 +132,9 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 			OutputPath: outputPath, Contract: cycle.Candidate.Contract, ContractHash: cycle.ContractHash,
 			Material: data, MaxInputBytes: s.Config.MaxInputBytes, MaxBudgetUSD: 1,
 		})
+		if metadataErr := s.retainReviewerMetadata(&cycle, metadata); metadataErr != nil {
+			return cycle, s.fail(ctx, &cycle, metadataErr)
+		}
 		if err != nil {
 			return cycle, s.fail(ctx, &cycle, fmt.Errorf("independent review: %w", err))
 		}
@@ -148,21 +151,6 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 	if err := s.validateReviewEvidence(review, cycle.Artifacts); err != nil {
 		return cycle, s.fail(ctx, &cycle, err)
 	}
-	if len(metadata.Transcript) > 0 {
-		artifact, writeErr := s.Store.WriteBytes(cycle.ID, "reviewer-transcript", "reviewer.jsonl", metadata.Transcript)
-		if writeErr != nil {
-			return cycle, s.fail(ctx, &cycle, writeErr)
-		}
-		appendArtifact(&cycle, artifact)
-	}
-	if len(metadata.Stderr) > 0 {
-		artifact, writeErr := s.Store.WriteBytes(cycle.ID, "reviewer-stderr", "reviewer.stderr", metadata.Stderr)
-		if writeErr != nil {
-			return cycle, s.fail(ctx, &cycle, writeErr)
-		}
-		appendArtifact(&cycle, artifact)
-	}
-
 	cycle.Review = &review
 	if cycle.Resolution == nil {
 		resolution := domain.ReviewResolution{
@@ -188,6 +176,27 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 		return cycle, err
 	}
 	return cycle, nil
+}
+
+func (s *Service) retainReviewerMetadata(cycle *domain.Cycle, metadata harness.Metadata) error {
+	for _, value := range []struct {
+		kind string
+		name string
+		data []byte
+	}{
+		{kind: "reviewer-transcript", name: "reviewer.jsonl", data: metadata.Transcript},
+		{kind: "reviewer-stderr", name: "reviewer.stderr", data: metadata.Stderr},
+	} {
+		if len(value.data) == 0 {
+			continue
+		}
+		artifact, err := s.Store.WriteBytes(cycle.ID, value.kind, value.name, value.data)
+		if err != nil {
+			return err
+		}
+		appendArtifact(cycle, artifact)
+	}
+	return nil
 }
 
 func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cycle, err error) {

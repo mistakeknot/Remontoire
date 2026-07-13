@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -390,10 +391,72 @@ func TestClaudeReviewUsesSelfContainedEvidenceAndParsesLoneJSONFence(t *testing.
 		"content-addressed citation keys, not signatures",
 		"Set id to that artifact path basename",
 		"including when your verdict is inconclusive",
+		"Required top-level object with exactly these five fields",
+		`"schema_version":"remontoire.review/v1"`,
+		`"contract_hash":"` + strings.Repeat("a", 64) + `"`,
+		`"digest":"` + strings.Repeat("0", 64) + `"`,
+		"Do not substitute summary for rationale or add checks",
 	} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("review prompt missing %q: %s", required, prompt)
 		}
+	}
+}
+
+func TestClaudeReviewRepairsInvalidSchemaOnceWithinRemainingBudget(t *testing.T) {
+	invalidReview := `{"contract_hash":"` + strings.Repeat("a", 64) + `","verdict":"close_success","rationale":"The bounded evidence is internally consistent.","evidence":[{"kind":"measurement","id":"measurement.json","digest":"` + strings.Repeat("b", 64) + `"}]}`
+	invalidEnvelope, err := json.Marshal(map[string]any{
+		"type":           "result",
+		"subtype":        "success",
+		"result":         "```json\n" + invalidReview + "\n```",
+		"num_turns":      1,
+		"total_cost_usd": 0.2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validEnvelope, err := json.Marshal(map[string]any{
+		"type":           "result",
+		"subtype":        "success",
+		"result":         "```json\n" + reviewJSON() + "\n```",
+		"num_turns":      1,
+		"total_cost_usd": 0.3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: invalidEnvelope}, {Stdout: validEnvelope}}}
+	backend := Claude{Binary: "claude", Model: "sonnet", Runner: runner}
+
+	review, meta, err := backend.Review(context.Background(), ReviewRequest{
+		WorkingDir:    "/worktree",
+		SchemaJSON:    []byte(`{"type":"object"}`),
+		Contract:      harnessContract(),
+		ContractHash:  strings.Repeat("a", 64),
+		Material:      []byte(`{"artifacts":[{"kind":"measurement","path":"/cycle/measurement.json","digest":"` + strings.Repeat("b", 64) + `"}]}`),
+		MaxInputBytes: 4096,
+		MaxBudgetUSD:  1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if review.Verdict != domain.VerdictCloseSuccess {
+		t.Fatalf("review = %#v", review)
+	}
+	if len(runner.calls) != 2 {
+		t.Fatalf("Claude calls = %d, want one initial attempt and one repair", len(runner.calls))
+	}
+	if got := findPrefix(runner.calls[1].Args, "--max-budget-usd="); got != "--max-budget-usd=0.8" {
+		t.Fatalf("repair budget = %q, want remaining budget", got)
+	}
+	if prompt := string(runner.calls[1].Stdin); !strings.Contains(prompt, "previous response failed deterministic schema validation") {
+		t.Fatalf("repair prompt does not explain the retry boundary: %s", prompt)
+	}
+	if meta.Turns != 2 || meta.CostUSD != 0.5 {
+		t.Fatalf("usage metadata = %#v", meta)
+	}
+	if !bytes.Contains(meta.Transcript, invalidEnvelope) || !bytes.Contains(meta.Transcript, validEnvelope) {
+		t.Fatalf("combined transcript omitted an attempt: %s", meta.Transcript)
 	}
 }
 

@@ -25,6 +25,15 @@ func (r *dynamicReviewer) Review(_ context.Context, request harness.ReviewReques
 	return r.call(request), harness.Metadata{Backend: "claude", Model: "review-fixture", Turns: 2, CostUSD: 0.1}, nil
 }
 
+type failingReviewer struct {
+	meta harness.Metadata
+	err  error
+}
+
+func (r failingReviewer) Review(context.Context, harness.ReviewRequest) (domain.Review, harness.Metadata, error) {
+	return domain.Review{}, r.meta, r.err
+}
+
 type fakeRoadmap struct {
 	calls  int
 	digest string
@@ -558,6 +567,47 @@ func TestReviewEvidenceMustBindToCycleArtifact(t *testing.T) {
 	_, err := service.Review(context.Background(), cycle.ID)
 	if err == nil || !strings.Contains(err.Error(), "evidence") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestFailedReviewRetainsReviewerTranscriptAndStderr(t *testing.T) {
+	service, kernel, _, _, _ := reviewedService(t, domain.VerdictCloseSuccess)
+	service.Reviewers["claude"] = failingReviewer{
+		meta: harness.Metadata{
+			Backend:    "claude",
+			Model:      "sonnet",
+			Transcript: []byte("invalid structured response\n"),
+			Stderr:     []byte("review diagnostic\n"),
+		},
+		err: errors.New("review schema_version is invalid"),
+	}
+	cycle := executeToReview(t, service)
+	if _, err := service.Review(context.Background(), cycle.ID); err == nil || !strings.Contains(err.Error(), "schema_version") {
+		t.Fatalf("error = %v", err)
+	}
+
+	persisted := kernel.cycles[cycle.ID]
+	for kind, want := range map[string]string{
+		"reviewer-transcript": "invalid structured response\n",
+		"reviewer-stderr":     "review diagnostic\n",
+	} {
+		var path string
+		for _, artifact := range persisted.Artifacts {
+			if artifact.Kind == kind {
+				path = artifact.Path
+				break
+			}
+		}
+		if path == "" {
+			t.Fatalf("failed cycle has no %s artifact: %#v", kind, persisted.Artifacts)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(data) != want {
+			t.Fatalf("%s = %q, want %q", kind, data, want)
+		}
 	}
 }
 

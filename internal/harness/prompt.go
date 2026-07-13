@@ -69,6 +69,13 @@ func reviewPrompt(request ReviewRequest, sanitized []byte) (string, error) {
 
 Return exactly one JSON object required by the supplied schema, including when your verdict is inconclusive. Do not add prose, markdown, or fields outside the schema.
 
+Required top-level object with exactly these five fields:
+{"schema_version":"%s","contract_hash":"%s","verdict":"close_success","rationale":"Evidence-backed explanation.","evidence":[{"kind":"measurement","id":"measurement.json","digest":"0000000000000000000000000000000000000000000000000000000000000000"}]}
+- Set schema_version to exactly "remontoire.review/v1".
+- Set contract_hash to the exact bound hash below.
+- Choose verdict from promote, close_success, close_failure, or inconclusive.
+- Do not substitute summary for rationale or add checks, findings, metadata, or any other field.
+
 Evidence provenance:
 - Remontoire, not you, executed the benchmark, captured the transcript and patch, computed content digests, and assembled the review material.
 - You are not asked to claim that you personally ran the benchmark or computed its digest. Assess whether the system-recorded evidence is internally consistent and sufficient for the verdict.
@@ -92,5 +99,5 @@ UNTRUSTED REVIEW MATERIAL
 %s
 </review-material>
 END UNTRUSTED REVIEW MATERIAL
-`, request.ContractHash, contractJSON, sanitized), nil
+`, domain.ReviewSchemaV1, request.ContractHash, request.ContractHash, contractJSON, sanitized), nil
 }
