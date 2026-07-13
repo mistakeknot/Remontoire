@@ -63,6 +63,7 @@ fi
 assert_not_contains "${SERVICE}" '%h/.claude'
 assert_not_contains "${SERVICE}" '%h/projects/Sylveste/docs'
 assert_contains "${SERVICE}" 'ReadWritePaths=%h/.clavain'
+assert_contains "${SERVICE}" 'Environment=PATH=%h/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin'
 assert_contains "${SERVICE}" 'Environment=CODEX_HOME=%h/.local/state/remontoire/codex'
 grep -Eq '^ReadWritePaths=.* %h/\.codex/auth\.json$' "${SERVICE}" || fail "${SERVICE} does not grant write access to only the Codex auth file"
 assert_contains "${SERVICE}" 'BindPaths=%h/.codex/auth.json:%h/.local/state/remontoire/codex/auth.json'

@@ -25,7 +25,7 @@ BindPaths=%h/.codex/auth.json:%h/.local/state/remontoire/codex/auth.json
 RestrictSUIDSGID=true
 LockPersonality=true
 
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_CACHE_HOME=%h/.local/state/remontoire/cache
 Environment=CODEX_HOME=%h/.local/state/remontoire/codex
 StandardOutput=journal

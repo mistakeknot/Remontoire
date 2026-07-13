@@ -77,6 +77,7 @@ configuration; approved experiment execution is a separate manual CLI action.
 Start exactly one proposal cycle through the deployed unit:
 
 ```bash
+export PATH="/usr/local/go/bin:${PATH}"
 systemctl --user start remontoire.service
 systemctl --user status remontoire.service --no-pager
 journalctl --user -u remontoire.service -n 100 --no-pager -o cat
@@ -115,6 +116,7 @@ interrupted, inspect the latest cycle and resume that exact ID instead of
 starting a second cycle:
 
 ```bash
+export PATH="/usr/local/go/bin:${PATH}"
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" status --json
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" resume CYCLE_ID --json
 ```
