@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mistakeknot/Remontoire/schemas/judgment-v1.json",
+  "title": "Remontoire portfolio judgment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "opportunities", "selected_index", "no_op_reason"],
+  "properties": {
+    "schema_version": {"const": "remontoire.judgment/v1"},
+    "opportunities": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {"$ref": "#/$defs/candidate"}
+    },
+    "selected_index": {"type": ["integer", "null"], "minimum": 0, "maximum": 4},
+    "no_op_reason": {"type": "string"}
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "digest"],
+      "properties": {
+        "kind": {"type": "string", "minLength": 1},
+        "id": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "unit", "direction", "baseline", "target"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "unit": {"type": "string", "minLength": 1},
+        "direction": {"enum": ["maximize", "minimize"]},
+        "baseline": {"type": "number"},
+        "target": {"type": "number"}
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_duration_seconds", "max_turns", "max_cost_usd"],
+      "properties": {
+        "max_duration_seconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "max_turns": {"type": "integer", "minimum": 1, "maximum": 30},
+        "max_cost_usd": {"type": "number", "exclusiveMinimum": 0, "maximum": 10}
+      }
+    },
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "hypothesis", "falsifier", "repository", "allowed_paths", "metric", "benchmark", "budget", "stop_conditions", "executor", "promotion_criteria", "closure_criteria", "artifact_paths"],
+      "properties": {
+        "schema_version": {"const": "remontoire.evidence-contract/v1"},
+        "hypothesis": {"type": "string", "minLength": 1},
+        "falsifier": {"type": "string", "minLength": 1},
+        "repository": {"type": "string", "minLength": 1},
+        "allowed_paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "metric": {"$ref": "#/$defs/metric"},
+        "benchmark": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "budget": {"$ref": "#/$defs/budget"},
+        "stop_conditions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "executor": {"enum": ["codex", "claude", "skaffen", "clavain"]},
+        "promotion_criteria": {"type": "string", "minLength": 1},
+        "closure_criteria": {"type": "string", "minLength": 1},
+        "artifact_paths": {"type": "array", "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "summary", "project", "priority", "impact", "uncertainty", "cost", "risk", "policy_fit", "evidence", "contract"],
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "summary": {"type": "string", "minLength": 1},
+        "project": {"type": "string", "minLength": 1},
+        "priority": {"const": 4},
+        "impact": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "cost": {"type": "number", "minimum": 0, "maximum": 1},
+        "risk": {"type": "number", "minimum": 0, "maximum": 1},
+        "policy_fit": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidence"}},
+        "contract": {"$ref": "#/$defs/contract"}
+      }
+    }
+  }
+}
