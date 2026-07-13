@@ -46,6 +46,9 @@ func (s *Service) Approve(ctx context.Context, cycleID, actor string) (cycle dom
 	if err != nil {
 		return domain.Cycle{}, err
 	}
+	if err := s.ensureStageEvent(ctx, &cycle); err != nil {
+		return cycle, err
+	}
 	if cycle.Stage == domain.StageApproved && cycle.Approval != nil {
 		return cycle, nil
 	}
@@ -83,10 +86,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	if err != nil {
 		return domain.Cycle{}, err
 	}
-	if cycle.Stage == domain.StageReviewing && cycle.IdempotencyKeys["benchmark:attempt"] == "completed" {
-		return cycle, nil
-	}
-	if cycle.Stage != domain.StageApproved && cycle.Stage != domain.StageExecuting {
+	if cycle.Stage != domain.StageApproved && cycle.Stage != domain.StageExecuting && !(cycle.Stage == domain.StageReviewing && cycle.IdempotencyKeys["benchmark:attempt"] == "completed") {
 		return cycle, fmt.Errorf("cycle %s must be approved before execution (stage %s)", cycle.ID, cycle.Stage)
 	}
 	owner := "remontoire:" + cycleID
@@ -102,6 +102,12 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
+	}
+	if err := s.ensureStageEvent(ctx, &cycle); err != nil {
+		return cycle, err
+	}
+	if cycle.Stage == domain.StageReviewing && cycle.IdempotencyKeys["benchmark:attempt"] == "completed" {
+		return cycle, nil
 	}
 	if cycle.Candidate == nil || cycle.Approval == nil {
 		return cycle, fmt.Errorf("cycle %s has no approved candidate", cycle.ID)
@@ -126,7 +132,45 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	var report harness.ExecutionReport
 	var metadata harness.Metadata
 	executionCompleteAtStart := cycle.IdempotencyKeys["execution:attempt"] == "completed"
-	if cycle.IdempotencyKeys["execution:attempt"] == "started" {
+	if cycle.IdempotencyKeys["execution:attempt"] != "started" && cycle.IdempotencyKeys["execution:attempt"] != "completed" {
+		if cycle.Execution == nil {
+			info, prepareErr := s.Worktrees.Prepare(ctx, cycle.Candidate.Contract.Repository, cycle.ID)
+			if prepareErr != nil {
+				return cycle, s.fail(ctx, &cycle, fmt.Errorf("prepare worktree: %w", prepareErr))
+			}
+			cycle.Execution = &domain.ExecutionRecord{
+				Backend: backendName, WorktreePath: info.Path, BaseCommit: info.BaseCommit, StartedAt: s.now(),
+			}
+		}
+		if cycle.IdempotencyKeys["execution:prepared"] != "completed" {
+			cycle.IdempotencyKeys["execution:prepared"] = "completed"
+			if err := s.persist(ctx, &cycle); err != nil {
+				return cycle, err
+			}
+		}
+	}
+
+	if cycle.Stage == domain.StageApproved || cycle.Stage == domain.StageExecuting {
+		if err := s.advanceOnce(ctx, &cycle, "run:execute", "propose", "execute"); err != nil {
+			return cycle, err
+		}
+		if cycle.Stage == domain.StageApproved {
+			if err := s.transition(ctx, &cycle, domain.StageExecuting); err != nil {
+				return cycle, err
+			}
+		}
+	}
+
+	invokeExecution := false
+	if cycle.IdempotencyKeys["execution:attempt"] != "started" && cycle.IdempotencyKeys["execution:attempt"] != "completed" {
+		cycle.IdempotencyKeys["execution:attempt"] = "started"
+		if err := s.persist(ctx, &cycle); err != nil {
+			return cycle, err
+		}
+		invokeExecution = true
+	}
+
+	if cycle.IdempotencyKeys["execution:attempt"] == "started" && !invokeExecution {
 		if cycle.Execution == nil {
 			return cycle, ErrExecutionIndeterminate
 		}
@@ -146,27 +190,10 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 		}
 		cycle.Artifacts = append(cycle.Artifacts, reportArtifact)
 		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Turns: cycle.Execution.Turns, CostUSD: cycle.Execution.CostUSD}
-	} else if cycle.IdempotencyKeys["execution:attempt"] != "completed" {
-		info, prepareErr := s.Worktrees.Prepare(ctx, cycle.Candidate.Contract.Repository, cycle.ID)
-		if prepareErr != nil {
-			return cycle, s.fail(ctx, &cycle, fmt.Errorf("prepare worktree: %w", prepareErr))
-		}
-		cycle.Execution = &domain.ExecutionRecord{
-			Backend: backendName, WorktreePath: info.Path, BaseCommit: info.BaseCommit, StartedAt: s.now(),
-		}
-		if err := s.Kernel.AdvanceRun(ctx, cycle.RunID); err != nil {
-			return cycle, s.fail(ctx, &cycle, fmt.Errorf("advance run to execute: %w", err))
-		}
-		if err := s.transition(ctx, &cycle, domain.StageExecuting); err != nil {
-			return cycle, err
-		}
-		cycle.IdempotencyKeys["execution:attempt"] = "started"
-		if err := s.persist(ctx, &cycle); err != nil {
-			return cycle, err
-		}
+	} else if invokeExecution {
 		executionCtx, cancel := context.WithTimeout(ctx, time.Duration(cycle.Candidate.Contract.Budget.MaxDurationSeconds)*time.Second)
 		report, metadata, err = executor.Execute(executionCtx, harness.ExecutionRequest{
-			Worktree: info.Path, SchemaPath: s.Config.ExecutionSchemaPath, OutputPath: outputPath, Contract: cycle.Candidate.Contract,
+			Worktree: cycle.Execution.WorktreePath, SchemaPath: s.Config.ExecutionSchemaPath, OutputPath: outputPath, Contract: cycle.Candidate.Contract,
 		})
 		cancel()
 		if err != nil {
@@ -267,8 +294,8 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	if err := s.persist(ctx, &cycle); err != nil {
 		return cycle, err
 	}
-	if err := s.Kernel.AdvanceRun(ctx, cycle.RunID); err != nil {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("advance run to review: %w", err))
+	if err := s.advanceOnce(ctx, &cycle, "run:review", "execute", "review"); err != nil {
+		return cycle, err
 	}
 	if err := s.transition(ctx, &cycle, domain.StageReviewing); err != nil {
 		return cycle, err

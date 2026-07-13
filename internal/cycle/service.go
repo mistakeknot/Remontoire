@@ -26,14 +26,25 @@ type Kernel interface {
 	SetLatestCycle(context.Context, string, string) error
 	CreateCycleRun(context.Context, string, string, map[string]any) (string, error)
 	AdvanceRun(context.Context, string) error
+	RunPhase(context.Context, string) (string, error)
+	RunStatus(context.Context, string) (string, string, error)
 	RecordReplayInput(context.Context, string, string, string, string, string) error
 	RecordStageEvent(context.Context, string, string, domain.Stage, string) error
 	Observation(context.Context, int) ([]adapters.Discovery, adapters.InterestProfile, error)
+	ListOutcomes(context.Context, int) ([]domain.OutcomeSummary, error)
+	SetOutcome(context.Context, domain.OutcomeSummary) error
+	RecordDiscoveryFeedback(context.Context, string, string, string, string) error
+	EmitReceipt(context.Context, string, string, string) (string, error)
+	FindReceipt(context.Context, string, string) (string, error)
+	VerifyReceipt(context.Context, string) error
 }
 
 type Backlog interface {
 	List(context.Context) ([]adapters.Bead, error)
 	CreateExperiment(context.Context, string, string, domain.Candidate) (string, error)
+	CreatePromotion(context.Context, string, string, domain.Candidate, int, string) (string, error)
+	AddNote(context.Context, string, string) error
+	Close(context.Context, string, string) error
 }
 
 type Policy interface {
@@ -48,6 +59,16 @@ type Executor interface {
 	Execute(context.Context, harness.ExecutionRequest) (harness.ExecutionReport, harness.Metadata, error)
 }
 
+type Reviewer interface {
+	Review(context.Context, harness.ReviewRequest) (domain.Review, harness.Metadata, error)
+}
+
+type Roadmap interface {
+	// Sync must be safe to repeat after an interrupted call and return the
+	// SHA-256 digest of the generated roadmap artifact.
+	Sync(context.Context) (string, error)
+}
+
 type WorktreeManager interface {
 	Prepare(context.Context, string, string) (adapters.WorktreeInfo, error)
 	ChangedPaths(context.Context, string) ([]string, error)
@@ -60,6 +81,8 @@ type Config struct {
 	ArtifactRoot           string
 	JudgmentSchemaPath     string
 	ExecutionSchemaPath    string
+	ReviewSchemaPath       string
+	ReviewerBackend        string
 	RoadmapPath            string
 	WorktreeRoot           string
 	AllowedRepositoryRoots []string
@@ -76,6 +99,8 @@ type Service struct {
 	Policy          Policy
 	Judge           Judge
 	Executors       map[string]Executor
+	Reviewers       map[string]Reviewer
+	Roadmap         Roadmap
 	Worktrees       WorktreeManager
 	BenchmarkRunner adapters.Runner
 	Store           FileStore
@@ -94,6 +119,7 @@ type Observation struct {
 	OckhamWeights   map[string]int           `json:"ockham_weights"`
 	OckhamDegraded  bool                     `json:"ockham_degraded"`
 	RoadmapDigest   string                   `json:"roadmap_digest,omitempty"`
+	PriorOutcomes   []domain.OutcomeSummary  `json:"prior_outcomes"`
 	Artifacts       []domain.Artifact        `json:"artifacts"`
 }
 
@@ -208,8 +234,8 @@ func (s *Service) Start(ctx context.Context, mode domain.Mode) (cycle domain.Cyc
 		cycle.CandidateHash = domain.FingerprintCandidate(candidate)
 		cycle.ContractHash = contractHash
 	}
-	if err := s.Kernel.AdvanceRun(ctx, cycle.RunID); err != nil {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("advance run to rank: %w", err))
+	if err := s.advanceOnce(ctx, &cycle, "run:rank", "observe", "rank"); err != nil {
+		return cycle, s.fail(ctx, &cycle, err)
 	}
 	if err := s.transition(ctx, &cycle, domain.StageRanked); err != nil {
 		return cycle, err
@@ -242,6 +268,13 @@ func (s *Service) ResumeProposal(ctx context.Context, cycleID string) (cycle dom
 			err = releaseErr
 		}
 	}()
+	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	if err != nil {
+		return domain.Cycle{}, err
+	}
+	if err := s.ensureStageEvent(ctx, &cycle); err != nil {
+		return cycle, err
+	}
 	if cycle.Stage == domain.StageAwaitingApproval || cycle.Stage == domain.StageCompleted {
 		return cycle, nil
 	}

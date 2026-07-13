@@ -22,7 +22,7 @@ func (s *Service) ensureProposal(ctx context.Context, cycle *domain.Cycle) (doma
 		cycle.ExperimentBeadID = existing.ID
 		cycle.IdempotencyKeys["bead:create"] = existing.ID
 		if cycle.Stage == domain.StageRanked {
-			if err := s.Kernel.AdvanceRun(ctx, cycle.RunID); err != nil {
+			if err := s.advanceOnce(ctx, cycle, "run:propose", "rank", "propose"); err != nil {
 				return *cycle, err
 			}
 			if err := s.transition(ctx, cycle, domain.StageProposed); err != nil {
@@ -50,8 +50,8 @@ func (s *Service) ensureProposal(ctx context.Context, cycle *domain.Cycle) (doma
 	}
 	cycle.ExperimentBeadID = beadID
 	cycle.IdempotencyKeys["bead:create"] = beadID
-	if err := s.Kernel.AdvanceRun(ctx, cycle.RunID); err != nil {
-		return *cycle, fmt.Errorf("advance run to propose: %w", err)
+	if err := s.advanceOnce(ctx, cycle, "run:propose", "rank", "propose"); err != nil {
+		return *cycle, err
 	}
 	if err := s.transition(ctx, cycle, domain.StageProposed); err != nil {
 		return *cycle, err
@@ -84,10 +84,21 @@ func (s *Service) transition(ctx context.Context, cycle *domain.Cycle, next doma
 	if err := s.persist(ctx, cycle); err != nil {
 		return err
 	}
-	if err := s.Kernel.RecordStageEvent(ctx, cycle.RunID, s.Config.ProjectDir, next, cycle.ID); err != nil {
-		return fmt.Errorf("record %s event: %w", next, err)
+	return s.ensureStageEvent(ctx, cycle)
+}
+
+func (s *Service) ensureStageEvent(ctx context.Context, cycle *domain.Cycle) error {
+	if cycle.Stage == domain.StageNew {
+		return nil
 	}
-	cycle.IdempotencyKeys["event:"+string(next)] = "recorded"
+	key := "event:" + string(cycle.Stage)
+	if cycle.IdempotencyKeys[key] == "recorded" {
+		return nil
+	}
+	if err := s.Kernel.RecordStageEvent(ctx, cycle.RunID, s.Config.ProjectDir, cycle.Stage, cycle.ID); err != nil {
+		return fmt.Errorf("record %s event: %w", cycle.Stage, err)
+	}
+	cycle.IdempotencyKeys[key] = "recorded"
 	return s.persist(ctx, cycle)
 }
 
@@ -130,6 +141,10 @@ func validateEvidenceBindings(judgment domain.Judgment, observation Observation)
 	for _, discovery := range observation.Discoveries {
 		discoveryIDs[discovery.ID] = true
 	}
+	outcomeIDs := map[string]bool{}
+	for _, outcome := range observation.PriorOutcomes {
+		outcomeIDs[outcome.CycleID] = true
+	}
 	candidate := judgment.Opportunities[*judgment.SelectedIndex]
 	for _, ref := range candidate.Evidence {
 		var artifactKind string
@@ -148,6 +163,11 @@ func validateEvidenceBindings(judgment domain.Judgment, observation Observation)
 			artifactKind = "ockham"
 		case "roadmap":
 			artifactKind = "roadmap"
+		case "outcome":
+			artifactKind = "outcomes"
+			if !outcomeIDs[ref.ID] {
+				return fmt.Errorf("evidence outcome %q is not in the observation", ref.ID)
+			}
 		default:
 			return fmt.Errorf("evidence kind %q is not bound to a canonical input", ref.Kind)
 		}

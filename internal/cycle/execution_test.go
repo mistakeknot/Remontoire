@@ -18,10 +18,14 @@ type fakeExecutor struct {
 	report harness.ExecutionReport
 	meta   harness.Metadata
 	err    error
+	check  func()
 }
 
 func (e *fakeExecutor) Execute(_ context.Context, _ harness.ExecutionRequest) (harness.ExecutionReport, harness.Metadata, error) {
 	e.calls++
+	if e.check != nil {
+		e.check()
+	}
 	return e.report, e.meta, e.err
 }
 
@@ -213,6 +217,37 @@ func TestExecutionUsageBudgetFailsBeforeBenchmark(t *testing.T) {
 	}
 }
 
+func TestBenchmarkFailureCanBeSignedAsFailedCycle(t *testing.T) {
+	service, kernel, _, _, _, benchmark := executionService(t)
+	service.Judge = dynamicJudge{call: func(request harness.JudgmentRequest) domain.Judgment {
+		judgment := selectedJudgment(t, request, service.Config.ProjectDir)
+		judgment.Opportunities[0].Contract.Metric = domain.Metric{
+			Name: "throughput", Unit: "items_s", Direction: domain.DirectionMaximize,
+			Source: domain.MetricSourceStdoutJSON, JSONField: "metrics.throughput", Baseline: 10, Target: 20,
+		}
+		return judgment
+	}}
+	benchmark.result = adapters.Result{Stdout: []byte("not json\n"), ExitCode: 0}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := service.Execute(context.Background(), cycle.ID)
+	if err == nil || failed.Stage != domain.StageFailed || !strings.Contains(err.Error(), "JSON") {
+		t.Fatalf("cycle=%#v error=%v", failed, err)
+	}
+	signed, err := service.Compound(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if signed.Stage != domain.StageFailed || signed.SignedReceiptID == "" || kernel.receiptCalls != 1 {
+		t.Fatalf("signed=%#v receipt calls=%d", signed, kernel.receiptCalls)
+	}
+}
+
 func TestResumeAfterExecutionCompletionDoesNotRepeatPatchWork(t *testing.T) {
 	service, kernel, _, executor, worktrees, benchmark := executionService(t)
 	cycle, err := service.Start(context.Background(), domain.ModeProposal)
@@ -249,6 +284,8 @@ func TestIndeterminateStartedAttemptNeverReinvokesExecutor(t *testing.T) {
 	cycle.Stage = domain.StageExecuting
 	cycle.Execution = &domain.ExecutionRecord{Backend: "codex", WorktreePath: worktrees.info.Path, BaseCommit: worktrees.info.BaseCommit}
 	cycle.IdempotencyKeys["execution:attempt"] = "started"
+	cycle.IdempotencyKeys["run:execute"] = "completed"
+	kernel.phase = "execute"
 	kernel.cycles[cycle.ID] = cycle
 
 	_, err = service.Execute(context.Background(), cycle.ID)
@@ -257,6 +294,83 @@ func TestIndeterminateStartedAttemptNeverReinvokesExecutor(t *testing.T) {
 	}
 	if executor.calls != 0 {
 		t.Fatal("indeterminate execution was invoked a second time")
+	}
+}
+
+func TestExecutionPreparationPrecedesAdvanceAndAttemptPrecedesHarness(t *testing.T) {
+	service, kernel, _, executor, _, _ := executionService(t)
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	preparationWasDurable := false
+	kernel.onAdvance = func(k *fakeKernel) {
+		if k.phase == "propose" {
+			persisted := k.cycles[cycle.ID]
+			preparationWasDurable = persisted.IdempotencyKeys["execution:prepared"] == "completed" && persisted.IdempotencyKeys["execution:attempt"] == ""
+		}
+	}
+	attemptWasDurable := false
+	executor.check = func() {
+		attemptWasDurable = kernel.cycles[cycle.ID].IdempotencyKeys["execution:attempt"] == "started"
+	}
+
+	if _, err := service.Execute(context.Background(), cycle.ID); err != nil {
+		t.Fatal(err)
+	}
+	if !preparationWasDurable || !attemptWasDurable || executor.calls != 1 {
+		t.Fatalf("preparation durable=%t attempt durable=%t executor calls=%d", preparationWasDurable, attemptWasDurable, executor.calls)
+	}
+}
+
+func TestExecutionStageInterruptionResumesBeforeFirstExecutorCall(t *testing.T) {
+	service, kernel, _, executor, _, _ := executionService(t)
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	kernel.eventErrors[domain.StageExecuting] = errors.New("stage event unavailable")
+
+	interrupted, err := service.Execute(context.Background(), cycle.ID)
+	if err == nil || interrupted.Stage != domain.StageExecuting || executor.calls != 0 {
+		t.Fatalf("cycle=%#v error=%v executor=%d", interrupted, err, executor.calls)
+	}
+	if interrupted.IdempotencyKeys["execution:prepared"] != "completed" || interrupted.IdempotencyKeys["execution:attempt"] != "" || interrupted.IdempotencyKeys["run:execute"] != "completed" {
+		t.Fatalf("keys=%#v", interrupted.IdempotencyKeys)
+	}
+	delete(kernel.eventErrors, domain.StageExecuting)
+
+	resumed, err := service.Execute(context.Background(), cycle.ID)
+	if err != nil || resumed.Stage != domain.StageReviewing || executor.calls != 1 {
+		t.Fatalf("cycle=%#v error=%v executor=%d", resumed, err, executor.calls)
+	}
+}
+
+func TestReviewAdvanceTimeoutAfterCommitIsReconciled(t *testing.T) {
+	service, kernel, _, executor, _, benchmark := executionService(t)
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	kernel.advanceErrAt = 4
+	kernel.advanceCommitErr = true
+	kernel.advanceErr = errors.New("review response timed out")
+
+	executed, err := service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executed.Stage != domain.StageReviewing || executed.IdempotencyKeys["run:review"] != "completed" || kernel.phase != "review" || executor.calls != 1 || benchmark.calls != 1 {
+		t.Fatalf("cycle=%#v phase=%s executor=%d benchmark=%d", executed, kernel.phase, executor.calls, benchmark.calls)
 	}
 }
 

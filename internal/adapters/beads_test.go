@@ -87,6 +87,40 @@ func TestBeadsCreateExperimentIsP4AndCarriesIdempotencyLabel(t *testing.T) {
 	}
 }
 
+func TestCycleExperimentAndPromotionAreDistinct(t *testing.T) {
+	items := []Bead{
+		{ID: "exp", Labels: []string{"remontoire-experiment", "remontoire:cycle:cycle-1"}},
+		{ID: "prom", Labels: []string{"remontoire-promotion", "remontoire:cycle:cycle-1"}},
+	}
+	experiment, ok := FindCycleExperiment(items, "cycle-1")
+	if !ok || experiment.ID != "exp" {
+		t.Fatalf("experiment = %#v, %v", experiment, ok)
+	}
+	promotion, ok := FindCyclePromotion(items, "cycle-1")
+	if !ok || promotion.ID != "prom" {
+		t.Fatalf("promotion = %#v, %v", promotion, ok)
+	}
+}
+
+func TestBeadsCreatePromotionCarriesMeasuredEvidence(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue("Revel-prom\n")
+	beads := Beads{Binary: "bd", Dir: "/portfolio", Runner: runner}
+	evidence := "Verdict: promote\nMetric: parse_ms=75 (target 80, minimize)\nContract: abc123\nPatch: def456"
+
+	id, err := beads.CreatePromotion(context.Background(), "cycle-1", "Revel-exp", adapterCandidate(), 2, evidence)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id != "Revel-prom" {
+		t.Fatalf("id = %q", id)
+	}
+	description := findArgPrefix(runner.calls[0].Invocation.Args, "--description=")
+	if !strings.Contains(description, evidence) || !strings.Contains(description, "Revel-exp") {
+		t.Fatalf("description = %q", description)
+	}
+}
+
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {

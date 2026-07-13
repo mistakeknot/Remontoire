@@ -19,8 +19,12 @@ func (s *Service) observe(ctx context.Context, cycle domain.Cycle) (Observation,
 		return Observation{}, fmt.Errorf("read intercore discovery state: %w", err)
 	}
 	weights, degraded := s.Policy.Weights(ctx)
+	outcomes, err := s.Kernel.ListOutcomes(ctx, s.Config.DiscoveryLimit)
+	if err != nil {
+		return Observation{}, fmt.Errorf("read prior outcome state: %w", err)
+	}
 
-	artifacts := make([]domain.Artifact, 0, 5)
+	artifacts := make([]domain.Artifact, 0, 6)
 	for _, input := range []struct {
 		kind string
 		name string
@@ -30,6 +34,7 @@ func (s *Service) observe(ctx context.Context, cycle domain.Cycle) (Observation,
 		{kind: "discoveries", name: "discoveries.json", data: discoveries},
 		{kind: "interest-profile", name: "interest-profile.json", data: profile},
 		{kind: "ockham", name: "ockham.json", data: map[string]any{"weights": weights, "degraded": degraded}},
+		{kind: "outcomes", name: "outcomes.json", data: outcomes},
 	} {
 		artifact, err := s.Store.WriteJSON(cycle.ID, input.kind, input.name, input.data)
 		if err != nil {
@@ -56,7 +61,8 @@ func (s *Service) observe(ctx context.Context, cycle domain.Cycle) (Observation,
 	return Observation{
 		SchemaVersion: ObservationSchemaV1, CycleID: cycle.ID, Portfolio: cycle.Portfolio,
 		CapturedAt: s.now(), Beads: beads, Discoveries: discoveries, InterestProfile: profile,
-		OckhamWeights: weights, OckhamDegraded: degraded, RoadmapDigest: roadmapDigest, Artifacts: artifacts,
+		OckhamWeights: weights, OckhamDegraded: degraded, RoadmapDigest: roadmapDigest,
+		PriorOutcomes: outcomes, Artifacts: artifacts,
 	}, nil
 }
 

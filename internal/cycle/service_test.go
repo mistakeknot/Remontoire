@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -17,17 +18,40 @@ import (
 )
 
 type fakeKernel struct {
-	cycles       map[string]domain.Cycle
-	latest       string
-	lockHeld     bool
-	setCalls     int
-	events       []domain.Stage
-	replay       []string
-	advanceCalls int
+	cycles            map[string]domain.Cycle
+	latest            string
+	lockHeld          bool
+	setCalls          int
+	events            []domain.Stage
+	eventKeys         map[string]bool
+	eventErrors       map[domain.Stage]error
+	replay            []string
+	advanceCalls      int
+	phase             string
+	runStatus         string
+	advanceErrAt      int
+	advanceCommitErr  bool
+	advanceErr        error
+	onAdvance         func(*fakeKernel)
+	outcomes          map[string]domain.OutcomeSummary
+	receiptCalls      int
+	findCalls         int
+	findReceiptID     string
+	emitErr           error
+	emitStoresOnError bool
+	verifyCalls       int
+	feedbackCalls     int
+	feedbackWrites    int
+	feedbackErr       error
+	feedbackStoreErr  bool
+	feedbackKeys      map[string]bool
 }
 
 func newFakeKernel() *fakeKernel {
-	return &fakeKernel{cycles: map[string]domain.Cycle{}}
+	return &fakeKernel{
+		cycles: map[string]domain.Cycle{}, outcomes: map[string]domain.OutcomeSummary{},
+		eventKeys: map[string]bool{}, eventErrors: map[domain.Stage]error{}, feedbackKeys: map[string]bool{}, phase: "observe", runStatus: "active",
+	}
 }
 
 func (k *fakeKernel) Health(context.Context) error { return nil }
@@ -62,31 +86,127 @@ func (k *fakeKernel) SetLatestCycle(_ context.Context, _, id string) error {
 	return nil
 }
 func (k *fakeKernel) CreateCycleRun(context.Context, string, string, map[string]any) (string, error) {
+	k.phase = "observe"
+	k.runStatus = "active"
 	return "run-1", nil
 }
 func (k *fakeKernel) AdvanceRun(context.Context, string) error {
 	k.advanceCalls++
+	if k.onAdvance != nil {
+		k.onAdvance(k)
+	}
+	shouldFail := k.advanceErr != nil && k.advanceCalls == k.advanceErrAt
+	if !shouldFail || k.advanceCommitErr {
+		phases := []string{"observe", "rank", "propose", "execute", "review", "compound"}
+		for i := range phases[:len(phases)-1] {
+			if k.phase == phases[i] {
+				k.phase = phases[i+1]
+				if k.phase == "compound" {
+					k.runStatus = "completed"
+				}
+				break
+			}
+		}
+	}
+	if shouldFail {
+		err := k.advanceErr
+		k.advanceErr = nil
+		return err
+	}
 	return nil
+}
+func (k *fakeKernel) RunPhase(context.Context, string) (string, error) {
+	return k.phase, nil
+}
+func (k *fakeKernel) RunStatus(context.Context, string) (string, string, error) {
+	return k.phase, k.runStatus, nil
 }
 func (k *fakeKernel) RecordReplayInput(_ context.Context, _, kind, key, _, _ string) error {
 	k.replay = append(k.replay, kind+":"+key)
 	return nil
 }
-func (k *fakeKernel) RecordStageEvent(_ context.Context, _, _ string, stage domain.Stage, _ string) error {
-	k.events = append(k.events, stage)
+func (k *fakeKernel) RecordStageEvent(_ context.Context, _, _ string, stage domain.Stage, cycleID string) error {
+	if err := k.eventErrors[stage]; err != nil {
+		return err
+	}
+	key := cycleID + ":" + string(stage)
+	if !k.eventKeys[key] {
+		k.eventKeys[key] = true
+		k.events = append(k.events, stage)
+	}
 	return nil
 }
 func (k *fakeKernel) Observation(context.Context, int) ([]adapters.Discovery, adapters.InterestProfile, error) {
 	return []adapters.Discovery{{ID: "disc-1", Source: "interject", Title: "Roadmap refresh overhead", Status: "scored", RelevanceScore: 0.8}}, adapters.InterestProfile{KeywordWeights: `{}`, SourceWeights: `{}`}, nil
 }
+func (k *fakeKernel) ListOutcomes(context.Context, int) ([]domain.OutcomeSummary, error) {
+	result := make([]domain.OutcomeSummary, 0, len(k.outcomes))
+	for _, outcome := range k.outcomes {
+		result = append(result, outcome)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].CycleID < result[j].CycleID })
+	return result, nil
+}
+func (k *fakeKernel) SetOutcome(_ context.Context, outcome domain.OutcomeSummary) error {
+	k.outcomes[outcome.CycleID] = outcome
+	return nil
+}
+func (k *fakeKernel) RecordDiscoveryFeedback(_ context.Context, _, _, _, idempotencyKey string) error {
+	k.feedbackCalls++
+	if k.feedbackKeys[idempotencyKey] {
+		return nil
+	}
+	if k.feedbackErr != nil {
+		if k.feedbackStoreErr {
+			k.feedbackKeys[idempotencyKey] = true
+			k.feedbackWrites++
+		}
+		err := k.feedbackErr
+		k.feedbackErr = nil
+		return err
+	}
+	k.feedbackKeys[idempotencyKey] = true
+	k.feedbackWrites++
+	return nil
+}
+func (k *fakeKernel) EmitReceipt(context.Context, string, string, string) (string, error) {
+	k.receiptCalls++
+	if k.emitErr != nil {
+		if k.emitStoresOnError {
+			k.findReceiptID = "receipt-1"
+		}
+		return "", k.emitErr
+	}
+	k.findReceiptID = "receipt-1"
+	return "receipt-1", nil
+}
+func (k *fakeKernel) FindReceipt(context.Context, string, string) (string, error) {
+	k.findCalls++
+	if k.findReceiptID == "" {
+		return "", adapters.ErrNotFound
+	}
+	return k.findReceiptID, nil
+}
+func (k *fakeKernel) VerifyReceipt(context.Context, string) error {
+	k.verifyCalls++
+	return nil
+}
 
 type fakeBacklog struct {
-	items       []adapters.Bead
-	createCalls int
-	created     domain.Candidate
+	items             []adapters.Bead
+	listErr           error
+	createCalls       int
+	created           domain.Candidate
+	promotionCalls    int
+	promotionEvidence string
+	closeCalls        int
+	noteCalls         int
 }
 
 func (b *fakeBacklog) List(context.Context) ([]adapters.Bead, error) {
+	if b.listErr != nil {
+		return nil, b.listErr
+	}
 	return append([]adapters.Bead(nil), b.items...), nil
 }
 func (b *fakeBacklog) CreateExperiment(_ context.Context, cycleID, fingerprint string, candidate domain.Candidate) (string, error) {
@@ -95,9 +215,32 @@ func (b *fakeBacklog) CreateExperiment(_ context.Context, cycleID, fingerprint s
 	id := "Revel-experiment"
 	b.items = append(b.items, adapters.Bead{
 		ID: id, Title: candidate.Title, Status: "open", Priority: 4,
-		Labels: []string{"remontoire:cycle:" + cycleID, "remontoire:fingerprint:" + fingerprint},
+		Labels: []string{"remontoire-experiment", "remontoire:cycle:" + cycleID, "remontoire:fingerprint:" + fingerprint},
 	})
 	return id, nil
+}
+func (b *fakeBacklog) CreatePromotion(_ context.Context, cycleID, experimentID string, candidate domain.Candidate, priority int, evidence string) (string, error) {
+	b.promotionCalls++
+	b.promotionEvidence = evidence
+	id := "Revel-promotion"
+	b.items = append(b.items, adapters.Bead{
+		ID: id, Title: candidate.Title, Status: "open", Priority: priority,
+		Labels: []string{"remontoire-promotion", "remontoire:cycle:" + cycleID},
+	})
+	return id, nil
+}
+func (b *fakeBacklog) AddNote(context.Context, string, string) error {
+	b.noteCalls++
+	return nil
+}
+func (b *fakeBacklog) Close(_ context.Context, beadID, _ string) error {
+	b.closeCalls++
+	for i := range b.items {
+		if b.items[i].ID == beadID {
+			b.items[i].Status = "closed"
+		}
+	}
+	return nil
 }
 
 type fakePolicy struct {
@@ -238,6 +381,43 @@ func TestProposalResumeAfterCreateBeforeStateDoesNotDuplicate(t *testing.T) {
 	}
 	if backlog.createCalls != 1 || resumed.ExperimentBeadID != "Revel-experiment" || resumed.Stage != domain.StageAwaitingApproval {
 		t.Fatalf("resumed=%#v createCalls=%d", resumed, backlog.createCalls)
+	}
+}
+
+func TestRankAdvanceTimeoutAfterCommitIsReconciled(t *testing.T) {
+	service, kernel, _ := testService(t, domain.ModeProposal)
+	kernel.advanceErrAt = 1
+	kernel.advanceCommitErr = true
+	kernel.advanceErr = errors.New("rank response timed out")
+
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cycle.Stage != domain.StageAwaitingApproval || cycle.IdempotencyKeys["run:rank"] != "completed" || kernel.phase != "propose" {
+		t.Fatalf("cycle=%#v phase=%s", cycle, kernel.phase)
+	}
+}
+
+func TestProposalResumeReconcilesCommittedRunAdvance(t *testing.T) {
+	service, kernel, backlog := testService(t, domain.ModeProposal)
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle.Stage = domain.StageRanked
+	cycle.ExperimentBeadID = ""
+	cycle.IdempotencyKeys["run:propose"] = "started"
+	kernel.cycles[cycle.ID] = cycle
+	kernel.phase = "propose"
+	before := kernel.advanceCalls
+
+	resumed, err := service.ResumeProposal(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Stage != domain.StageAwaitingApproval || resumed.IdempotencyKeys["run:propose"] != "completed" || kernel.advanceCalls != before || backlog.createCalls != 1 {
+		t.Fatalf("resumed=%#v advances=%d before=%d creates=%d", resumed, kernel.advanceCalls, before, backlog.createCalls)
 	}
 }
 

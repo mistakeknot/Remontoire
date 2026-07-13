@@ -95,13 +95,78 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 	wantCalls := [][]string{
 		{"--json", "run", "create", "--project=/repo", "--goal=Remontoire portfolio cycle cycle-1", "--scope-id=cycle-1", `--phases=["observe","rank","propose","execute","review","compound"]`, `--metadata={"mode":"proposal"}`},
 		{"run", "replay", "record", "run-123", "--kind=beads", "--key=beads.json", `--payload={"sha256":"abc"}`, "--artifact-ref=.remontoire/cycles/cycle-1/beads.json"},
-		{"events", "record", "--source=interspect", "--type=remontoire.stage", "--run=run-123", "--project=/repo", `--payload={"agent_name":"remontoire","context":"{\"cycle_id\":\"cycle-1\",\"stage\":\"observing\"}"}`},
+		{"events", "record", "--source=interspect", "--type=remontoire.stage", "--run=run-123", "--project=/repo", "--idempotency-key=remontoire:cycle-1:observing", `--payload={"agent_name":"remontoire","context":"{\"cycle_id\":\"cycle-1\",\"stage\":\"observing\"}"}`},
 		{"--json", "receipt", "emit", "--agent=remontoire", "--model=codex", "--content-hash=" + strings.Repeat("a", 64), "--parent-run=run-123"},
 	}
 	for i, want := range wantCalls {
 		if got := runner.calls[i].Invocation.Args; !reflect.DeepEqual(got, want) {
 			t.Errorf("call %d args = %#v, want %#v", i, got, want)
 		}
+	}
+}
+
+func TestIntercoreFindsExactReceiptOrReturnsTypedNotFound(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	t.Run("found", func(t *testing.T) {
+		runner := &recordingRunner{}
+		runner.queue(`{"receipt_id":"rcpt-1"}`)
+		ic := Intercore{Binary: "ic", Runner: runner}
+		id, err := ic.FindReceipt(context.Background(), "run-1", hash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if id != "rcpt-1" {
+			t.Fatalf("receipt id = %q", id)
+		}
+		want := []string{"--json", "receipt", "find", "--agent=remontoire", "--parent-run=run-1", "--content-hash=" + hash}
+		if got := runner.calls[0].Invocation.Args; !reflect.DeepEqual(got, want) {
+			t.Fatalf("args = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		runner := &recordingRunner{}
+		runner.queueExit(1, "")
+		ic := Intercore{Binary: "ic", Runner: runner}
+		_, err := ic.FindReceipt(context.Background(), "run-1", hash)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("error = %v", err)
+		}
+	})
+}
+
+func TestIntercoreRecordsDiscoveryFeedbackWithExplicitIdempotencyKey(t *testing.T) {
+	runner := &recordingRunner{}
+	ic := Intercore{Binary: "ic", Runner: runner}
+	key := "remontoire:cycle-1:disc-1"
+
+	if err := ic.RecordDiscoveryFeedback(context.Background(), "disc-1", "boost", "/tmp/outcome.json", key); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"discovery", "feedback", "disc-1", "--signal=boost", "--actor=remontoire",
+		"--idempotency-key=" + key, "--data=@/tmp/outcome.json",
+	}
+	if got := runner.calls[0].Invocation.Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestIntercoreReadsRunStatus(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue(`{"id":"run-1","phase":"compound","status":"completed"}`)
+	ic := Intercore{Binary: "ic", Runner: runner}
+
+	phase, status, err := ic.RunStatus(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != "compound" || status != "completed" {
+		t.Fatalf("phase=%q status=%q", phase, status)
+	}
+	want := []string{"--json", "run", "status", "run-1"}
+	if got := runner.calls[0].Invocation.Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
 
@@ -136,5 +201,52 @@ func TestIntercoreReadsCanonicalObservation(t *testing.T) {
 		if got := runner.calls[i].Invocation.Args; !reflect.DeepEqual(got, want[i]) {
 			t.Errorf("call %d = %#v, want %#v", i, got, want[i])
 		}
+	}
+}
+
+func TestIntercorePersistsAndListsOutcomeState(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue("")
+	runner.queue("cycle-1\ncycle-2\n")
+	runner.queue(`{"schema_version":"remontoire.outcome/v1","cycle_id":"cycle-2","final_verdict":"promote"}`)
+	ic := Intercore{Binary: "ic", Runner: runner}
+	outcome := domain.OutcomeSummary{SchemaVersion: domain.OutcomeSchemaV1, CycleID: "cycle-2", FinalVerdict: domain.VerdictPromote}
+
+	if err := ic.SetOutcome(context.Background(), outcome); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ic.ListOutcomes(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].CycleID != "cycle-2" {
+		t.Fatalf("outcomes = %#v", got)
+	}
+	want := [][]string{
+		{"state", "set", "remontoire.outcome", "cycle-2"},
+		{"state", "list", "remontoire.outcome"},
+		{"state", "get", "remontoire.outcome", "cycle-2"},
+	}
+	for i := range want {
+		if got := runner.calls[i].Invocation.Args; !reflect.DeepEqual(got, want[i]) {
+			t.Errorf("call %d = %#v, want %#v", i, got, want[i])
+		}
+	}
+}
+
+func TestIntercoreReadsCurrentRunPhase(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue("review\n")
+	ic := Intercore{Binary: "ic", Runner: runner}
+	phase, err := ic.RunPhase(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase != "review" {
+		t.Fatalf("phase = %q", phase)
+	}
+	want := []string{"run", "phase", "run-1"}
+	if got := runner.calls[0].Invocation.Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }

@@ -73,6 +73,9 @@ func validateExecutionReport(report ExecutionReport, contract domain.EvidenceCon
 	if strings.TrimSpace(report.Summary) == "" {
 		return fmt.Errorf("execution summary is required")
 	}
+	if !report.Completed {
+		return fmt.Errorf("execution report must declare completed=true")
+	}
 	for _, changed := range report.ChangedPaths {
 		if filepath.IsAbs(changed) {
 			return fmt.Errorf("execution changed path %q is absolute", changed)

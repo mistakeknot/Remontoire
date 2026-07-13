@@ -112,7 +112,7 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 	if decodeErr != nil {
 		return domain.Review{}, meta, decodeErr
 	}
-	if err := validateReview(review, request.ContractHash); err != nil {
+	if err := ValidateReview(review, request.ContractHash); err != nil {
 		return domain.Review{}, meta, err
 	}
 	return review, meta, nil

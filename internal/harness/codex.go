@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
@@ -101,7 +102,7 @@ func (c Codex) Review(ctx context.Context, request ReviewRequest) (domain.Review
 	if err := decodeFile(request.OutputPath, &review); err != nil {
 		return domain.Review{}, meta, fmt.Errorf("codex review: %w", err)
 	}
-	if err := validateReview(review, request.ContractHash); err != nil {
+	if err := ValidateReview(review, request.ContractHash); err != nil {
 		return domain.Review{}, meta, err
 	}
 	return review, meta, nil
@@ -160,7 +161,18 @@ func LoadExecutionReport(path string, contract domain.EvidenceContract) (Executi
 	return report, nil
 }
 
-func validateReview(review domain.Review, contractHash string) error {
+func LoadReview(path, contractHash string) (domain.Review, error) {
+	var review domain.Review
+	if err := decodeFile(path, &review); err != nil {
+		return domain.Review{}, err
+	}
+	if err := ValidateReview(review, contractHash); err != nil {
+		return domain.Review{}, err
+	}
+	return review, nil
+}
+
+func ValidateReview(review domain.Review, contractHash string) error {
 	if review.SchemaVersion != domain.ReviewSchemaV1 {
 		return fmt.Errorf("review schema_version must be %q", domain.ReviewSchemaV1)
 	}
@@ -170,7 +182,7 @@ func validateReview(review domain.Review, contractHash string) error {
 	if review.Verdict != domain.VerdictPromote && review.Verdict != domain.VerdictCloseSuccess && review.Verdict != domain.VerdictCloseFailure && review.Verdict != domain.VerdictInconclusive {
 		return fmt.Errorf("review verdict %q is invalid", review.Verdict)
 	}
-	if review.Rationale == "" || len(review.Evidence) == 0 {
+	if strings.TrimSpace(review.Rationale) == "" || len(review.Evidence) == 0 {
 		return fmt.Errorf("review rationale and evidence are required")
 	}
 	return nil

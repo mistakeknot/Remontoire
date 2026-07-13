@@ -152,6 +152,17 @@ func TestCodexExecuteIsWorkspaceBoundAndDisablesToolNetwork(t *testing.T) {
 	}
 }
 
+func TestExecutionReportMustDeclareCompletion(t *testing.T) {
+	report := ExecutionReport{
+		SchemaVersion: ExecutionSchemaV1,
+		Summary:       "Stopped before the bounded implementation was complete.",
+		ChangedPaths:  []string{"internal/roadmap/cache_test.go"},
+	}
+	if err := validateExecutionReport(report, harnessContract()); err == nil || !strings.Contains(err.Error(), "completed") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestClaudeJudgeUsesReadOnlyToolsAndParsesStructuredEnvelope(t *testing.T) {
 	schema := `{"type":"object"}`
 	envelope := map[string]any{

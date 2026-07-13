@@ -156,6 +156,36 @@ func (c Intercore) AdvanceRun(ctx context.Context, runID string) error {
 	return err
 }
 
+func (c Intercore) RunPhase(ctx context.Context, runID string) (string, error) {
+	result, err := c.run(ctx, nil, "run", "phase", runID)
+	if err != nil {
+		return "", err
+	}
+	phase := strings.TrimSpace(string(result.Stdout))
+	if phase == "" || strings.ContainsAny(phase, " \t\r\n") {
+		return "", fmt.Errorf("run phase returned invalid phase %q", phase)
+	}
+	return phase, nil
+}
+
+func (c Intercore) RunStatus(ctx context.Context, runID string) (string, string, error) {
+	result, err := c.run(ctx, nil, "--json", "run", "status", runID)
+	if err != nil {
+		return "", "", err
+	}
+	var payload struct {
+		Phase  string `json:"phase"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(result.Stdout, &payload); err != nil {
+		return "", "", fmt.Errorf("decode run status: %w", err)
+	}
+	if payload.Phase == "" || strings.ContainsAny(payload.Phase, " \t\r\n") || payload.Status == "" || strings.ContainsAny(payload.Status, " \t\r\n") {
+		return "", "", fmt.Errorf("run status returned invalid phase/status %q/%q", payload.Phase, payload.Status)
+	}
+	return payload.Phase, payload.Status, nil
+}
+
 func (c Intercore) RecordReplayInput(ctx context.Context, runID, kind, key, payload, artifactRef string) error {
 	args := []string{"run", "replay", "record", runID, "--kind=" + kind, "--key=" + key, "--payload=" + payload}
 	if artifactRef != "" {
@@ -180,6 +210,7 @@ func (c Intercore) RecordStageEvent(ctx context.Context, runID, project string, 
 		"--type=remontoire.stage",
 		"--run="+runID,
 		"--project="+project,
+		"--idempotency-key=remontoire:"+cycleID+":"+string(stage),
 		"--payload="+string(payload),
 	)
 	return err
@@ -205,8 +236,47 @@ func (c Intercore) Observation(ctx context.Context, limit int) ([]Discovery, Int
 	return discoveries, profile, nil
 }
 
-func (c Intercore) RecordDiscoveryFeedback(ctx context.Context, discoveryID, signal, dataPath string) error {
-	args := []string{"discovery", "feedback", discoveryID, "--signal=" + signal, "--actor=remontoire"}
+func (c Intercore) SetOutcome(ctx context.Context, outcome domain.OutcomeSummary) error {
+	payload, err := json.Marshal(outcome)
+	if err != nil {
+		return fmt.Errorf("marshal outcome: %w", err)
+	}
+	_, err = c.run(ctx, payload, "state", "set", "remontoire.outcome", outcome.CycleID)
+	return err
+}
+
+func (c Intercore) ListOutcomes(ctx context.Context, limit int) ([]domain.OutcomeSummary, error) {
+	result, err := c.run(ctx, nil, "state", "list", "remontoire.outcome")
+	if err != nil {
+		return nil, err
+	}
+	ids := strings.Fields(string(result.Stdout))
+	if limit > 0 && len(ids) > limit {
+		ids = ids[len(ids)-limit:]
+	}
+	outcomes := make([]domain.OutcomeSummary, 0, len(ids))
+	for _, id := range ids {
+		result, err := c.run(ctx, nil, "state", "get", "remontoire.outcome", id)
+		if err != nil {
+			return nil, err
+		}
+		var outcome domain.OutcomeSummary
+		if err := json.Unmarshal(result.Stdout, &outcome); err != nil {
+			return nil, fmt.Errorf("decode outcome %s: %w", id, err)
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
+}
+
+func (c Intercore) RecordDiscoveryFeedback(ctx context.Context, discoveryID, signal, dataPath, idempotencyKey string) error {
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return fmt.Errorf("record discovery feedback: idempotency key is required")
+	}
+	args := []string{
+		"discovery", "feedback", discoveryID, "--signal=" + signal, "--actor=remontoire",
+		"--idempotency-key=" + idempotencyKey,
+	}
 	if dataPath != "" {
 		args = append(args, "--data=@"+dataPath)
 	}
@@ -238,6 +308,31 @@ func (c Intercore) EmitReceipt(ctx context.Context, runID, model, contentHash st
 	}
 	if payload.ReceiptID == "" {
 		return "", fmt.Errorf("receipt emit returned no receipt_id")
+	}
+	return payload.ReceiptID, nil
+}
+
+func (c Intercore) FindReceipt(ctx context.Context, runID, contentHash string) (string, error) {
+	result, err := c.invoke(ctx, nil,
+		"--json", "receipt", "find",
+		"--agent=remontoire",
+		"--parent-run="+runID,
+		"--content-hash="+contentHash,
+	)
+	if result.ExitCode == 1 {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		ReceiptID string `json:"receipt_id"`
+	}
+	if err := json.Unmarshal(result.Stdout, &payload); err != nil {
+		return "", fmt.Errorf("decode receipt find: %w", err)
+	}
+	if payload.ReceiptID == "" {
+		return "", fmt.Errorf("receipt find returned no receipt_id")
 	}
 	return payload.ReceiptID, nil
 }

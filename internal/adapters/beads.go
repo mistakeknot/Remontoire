@@ -58,13 +58,39 @@ func HasFingerprint(beads []Bead, fingerprint string) bool {
 func FindCycleExperiment(beads []Bead, cycleID string) (Bead, bool) {
 	want := "remontoire:cycle:" + cycleID
 	for _, bead := range beads {
-		for _, label := range bead.Labels {
-			if label == want {
-				return bead, true
-			}
+		if hasLabel(bead, "remontoire-experiment") && hasLabel(bead, want) {
+			return bead, true
 		}
 	}
 	return Bead{}, false
+}
+
+func FindCyclePromotion(beads []Bead, cycleID string) (Bead, bool) {
+	want := "remontoire:cycle:" + cycleID
+	for _, bead := range beads {
+		if hasLabel(bead, "remontoire-promotion") && hasLabel(bead, want) {
+			return bead, true
+		}
+	}
+	return Bead{}, false
+}
+
+func FindBead(beads []Bead, beadID string) (Bead, bool) {
+	for _, bead := range beads {
+		if bead.ID == beadID {
+			return bead, true
+		}
+	}
+	return Bead{}, false
+}
+
+func hasLabel(bead Bead, want string) bool {
+	for _, label := range bead.Labels {
+		if label == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (b Beads) CreateExperiment(ctx context.Context, cycleID, fingerprint string, candidate domain.Candidate) (string, error) {
@@ -135,9 +161,12 @@ func (b Beads) AddNote(ctx context.Context, beadID, note string) error {
 	return err
 }
 
-func (b Beads) CreatePromotion(ctx context.Context, cycleID, experimentID string, candidate domain.Candidate, priority int) (string, error) {
+func (b Beads) CreatePromotion(ctx context.Context, cycleID, experimentID string, candidate domain.Candidate, priority int, evidence string) (string, error) {
 	if priority < 0 || priority > 4 {
 		return "", fmt.Errorf("promotion priority %d is invalid", priority)
+	}
+	if strings.TrimSpace(evidence) == "" {
+		return "", fmt.Errorf("promotion evidence is required")
 	}
 	result, err := b.run(ctx,
 		"create", "--silent",
@@ -145,7 +174,7 @@ func (b Beads) CreatePromotion(ctx context.Context, cycleID, experimentID string
 		"--type=feature",
 		"--priority=P"+strconv.Itoa(priority),
 		"--labels=remontoire-promotion,remontoire:cycle:"+cycleID,
-		"--description=Promoted from bounded experiment "+experimentID+". "+candidate.Summary,
+		"--description=Promoted from bounded experiment "+experimentID+". "+candidate.Summary+"\n\nMeasured evidence:\n"+strings.TrimSpace(evidence),
 		"--acceptance="+candidate.Contract.PromotionCriteria,
 		"--deps=discovered-from:"+experimentID,
 		"--external-ref=remontoire:"+cycleID,

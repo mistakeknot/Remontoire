@@ -9,6 +9,7 @@ const (
 	ApprovalSchemaV1 = "remontoire.approval/v1"
 	ReviewSchemaV1   = "remontoire.review/v1"
 	ReceiptSchemaV1  = "remontoire.receipt/v1"
+	OutcomeSchemaV1  = "remontoire.outcome/v1"
 )
 
 type Mode string
@@ -155,6 +156,34 @@ type Review struct {
 	Evidence      []EvidenceRef `json:"evidence"`
 }
 
+type ReviewResolution struct {
+	ReviewerVerdict Verdict   `json:"reviewer_verdict"`
+	FinalVerdict    Verdict   `json:"final_verdict"`
+	OverrideReason  string    `json:"override_reason,omitempty"`
+	ReviewerBackend string    `json:"reviewer_backend,omitempty"`
+	ReviewerModel   string    `json:"reviewer_model,omitempty"`
+	ResolvedAt      time.Time `json:"resolved_at"`
+}
+
+type OutcomeSummary struct {
+	SchemaVersion    string    `json:"schema_version"`
+	CycleID          string    `json:"cycle_id"`
+	Portfolio        string    `json:"portfolio"`
+	Project          string    `json:"project"`
+	Title            string    `json:"title"`
+	CandidateHash    string    `json:"candidate_hash"`
+	ContractHash     string    `json:"contract_hash"`
+	ExperimentBeadID string    `json:"experiment_bead_id"`
+	PromotionBeadID  string    `json:"promotion_bead_id,omitempty"`
+	FinalVerdict     Verdict   `json:"final_verdict"`
+	MetricName       string    `json:"metric_name"`
+	MetricValue      float64   `json:"metric_value"`
+	MetricTarget     float64   `json:"metric_target"`
+	MetricDirection  Direction `json:"metric_direction"`
+	Rationale        string    `json:"rationale"`
+	RecordedAt       time.Time `json:"recorded_at"`
+}
+
 type Artifact struct {
 	Kind   string `json:"kind"`
 	Path   string `json:"path"`
@@ -180,6 +209,7 @@ type Cycle struct {
 	Execution        *ExecutionRecord  `json:"execution,omitempty"`
 	Measurement      *Measurement      `json:"measurement,omitempty"`
 	Review           *Review           `json:"review,omitempty"`
+	Resolution       *ReviewResolution `json:"resolution,omitempty"`
 	Artifacts        []Artifact        `json:"artifacts,omitempty"`
 	IdempotencyKeys  map[string]string `json:"idempotency_keys,omitempty"`
 	RoadmapDigest    string            `json:"roadmap_digest,omitempty"`
