@@ -6,9 +6,9 @@
   "additionalProperties": false,
   "required": ["schema_version", "contract_hash", "verdict", "rationale", "evidence"],
   "properties": {
-    "schema_version": {"const": "remontoire.review/v1"},
+    "schema_version": {"type": "string", "const": "remontoire.review/v1"},
     "contract_hash": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
-    "verdict": {"enum": ["promote", "close_success", "close_failure", "inconclusive"]},
+    "verdict": {"type": "string", "enum": ["promote", "close_success", "close_failure", "inconclusive"]},
     "rationale": {"type": "string", "minLength": 1},
     "evidence": {
       "type": "array",

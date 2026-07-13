@@ -2,6 +2,7 @@ package schemas_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,39 @@ func TestPublishedSchemasAreValidRootContracts(t *testing.T) {
 			}
 			validateLocalRefs(t, schema, schema)
 		})
+	}
+}
+
+func TestPublishedSchemasUseTypedConstAndEnumNodes(t *testing.T) {
+	for _, name := range []string{"judgment-v1.json", "execution-v1.json", "review-v1.json"} {
+		t.Run(name, func(t *testing.T) {
+			data, err := os.ReadFile(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var schema map[string]any
+			if err := json.Unmarshal(data, &schema); err != nil {
+				t.Fatalf("decode schema: %v", err)
+			}
+			validateTypedConstAndEnumNodes(t, "$", schema)
+		})
+	}
+}
+
+func validateTypedConstAndEnumNodes(t *testing.T, path string, value any) {
+	t.Helper()
+	switch typed := value.(type) {
+	case map[string]any:
+		if (typed["const"] != nil || typed["enum"] != nil) && typed["type"] == nil {
+			t.Errorf("%s: const and enum schema nodes must declare type", path)
+		}
+		for key, child := range typed {
+			validateTypedConstAndEnumNodes(t, path+"/"+key, child)
+		}
+	case []any:
+		for index, child := range typed {
+			validateTypedConstAndEnumNodes(t, fmt.Sprintf("%s/%d", path, index), child)
+		}
 	}
 }
 

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "summary", "changed_paths", "commands", "completed"],
   "properties": {
-    "schema_version": {"const": "remontoire.execution/v1"},
+    "schema_version": {"type": "string", "const": "remontoire.execution/v1"},
     "summary": {"type": "string", "minLength": 1},
     "changed_paths": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "commands": {"type": "array", "items": {"type": "string"}},
