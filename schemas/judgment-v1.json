@@ -21,7 +21,7 @@
       "additionalProperties": false,
       "required": ["kind", "id", "digest"],
       "properties": {
-        "kind": {"type": "string", "minLength": 1},
+        "kind": {"type": "string", "enum": ["bead", "discovery", "policy", "roadmap", "outcome"]},
         "id": {"type": "string", "minLength": 1},
         "digest": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"}
       }

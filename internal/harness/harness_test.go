@@ -108,8 +108,15 @@ func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 	prompt := string(runner.calls[0].Stdin)
-	if !strings.Contains(prompt, "UNTRUSTED CANONICAL DATA") || !strings.Contains(prompt, "one selected P4") {
-		t.Fatalf("judge prompt missing safety contract: %s", prompt)
+	for _, required := range []string{
+		"UNTRUSTED CANONICAL DATA",
+		"one selected P4",
+		`kind "discovery": id is a discovery ID`,
+		`Never use plural artifact names such as "discoveries" or "beads" as evidence kinds.`,
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("judge prompt missing %q: %s", required, prompt)
+		}
 	}
 }
 

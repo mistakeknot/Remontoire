@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -67,6 +68,28 @@ func TestPublishedSchemasUseTypedConstAndEnumNodes(t *testing.T) {
 			}
 			validateTypedConstAndEnumNodes(t, "$", schema)
 		})
+	}
+}
+
+func TestJudgmentSchemaConstrainsCanonicalEvidenceKinds(t *testing.T) {
+	data, err := os.ReadFile("judgment-v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema struct {
+		Definitions map[string]struct {
+			Properties map[string]struct {
+				Enum []string `json:"enum"`
+			} `json:"properties"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatal(err)
+	}
+	got := schema.Definitions["evidence"].Properties["kind"].Enum
+	want := []string{"bead", "discovery", "policy", "roadmap", "outcome"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("evidence kinds = %v, want %v", got, want)
 	}
 }
 
