@@ -143,6 +143,7 @@ type Artifact struct {
 type Cycle struct {
 	SchemaVersion    string            `json:"schema_version"`
 	ID               string            `json:"id"`
+	RunID            string            `json:"run_id,omitempty"`
 	Portfolio        string            `json:"portfolio"`
 	Mode             Mode              `json:"mode"`
 	Stage            Stage             `json:"stage"`
