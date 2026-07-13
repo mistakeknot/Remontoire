@@ -1,0 +1,7 @@
+/remontoire
+/.remontoire/
+/dist/
+/coverage.out
+*.test
+*.prof
+.DS_Store

@@ -1,0 +1,53 @@
+version: 1
+mode: dependency-driven
+tier: deep
+max_parallel: 1
+timeout_per_task: 900
+
+stages:
+  - name: "Contracts"
+    tasks:
+      - id: task-1
+        title: "Domain contracts, schemas, and invariants"
+        files: [internal/domain/, schemas/]
+        depends: []
+  - name: "Canonical integrations"
+    tasks:
+      - id: task-2
+        title: "Intercore, Beads, Ockham, roadmap, and process adapters"
+        files: [internal/adapters/]
+        depends: [task-1]
+      - id: task-3
+        title: "Codex and Claude structured harness backends"
+        files: [internal/harness/]
+        depends: [task-1]
+  - name: "Portfolio cycle"
+    tasks:
+      - id: task-4
+        title: "Observe, rank, deduplicate, and propose"
+        files: [internal/cycle/observe.go, internal/cycle/propose.go, internal/cycle/store.go]
+        depends: [task-2, task-3]
+      - id: task-5
+        title: "Approval and bounded worktree execution"
+        files: [internal/cycle/approve.go, internal/cycle/execute.go, internal/adapters/worktree.go]
+        depends: [task-4]
+      - id: task-6
+        title: "Review, feedback, roadmap, and terminal receipt"
+        files: [internal/cycle/review.go, internal/cycle/compound.go, internal/receipt/]
+        depends: [task-5]
+  - name: "Operations"
+    tasks:
+      - id: task-7
+        title: "CLI, replay, and recovery"
+        files: [cmd/remontoire/, internal/app/, config/]
+        depends: [task-6]
+      - id: task-8
+        title: "Systemd scheduling and zklw deployment"
+        files: [deploy/systemd/, scripts/, docs/operations/]
+        depends: [task-7]
+  - name: "Release"
+    tasks:
+      - id: task-9
+        title: "Review, publish, install, and live approved canary"
+        files: []
+        depends: [task-8]
