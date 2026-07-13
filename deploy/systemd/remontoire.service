@@ -1,0 +1,29 @@
+[Unit]
+Description=Remontoire portfolio proposal cycle
+Documentation=https://github.com/mistakeknot/Remontoire
+ConditionPathIsExecutable=%h/.local/bin/remontoire
+ConditionPathExists=%h/.config/remontoire/config.json
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects
+ExecStartPre=%h/.local/share/remontoire/wait-network.sh
+ExecStart=%h/.local/bin/remontoire --config=%h/.config/remontoire/config.json cycle --mode=proposal --json
+TimeoutStartSec=30min
+KillSignal=SIGTERM
+UMask=0077
+
+# Scheduled proposal cycles may write canonical state and roadmap outputs only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.clavain -%h/projects/.clavain -%h/projects/.beads %h/.beads %h/.local/state/remontoire %h/.local/state/remontoire/cycles
+RestrictSUIDSGID=true
+LockPersonality=true
+
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=XDG_CACHE_HOME=%h/.local/state/remontoire/cache
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remontoire

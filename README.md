@@ -26,8 +26,10 @@ authority.
 ## Status
 
 v0.1 is under active development. The product contract is in
-[`docs/PRD.md`](docs/PRD.md), and the implementation plan is in
-[`docs/plans/2026-07-13-remontoire-v0.1.md`](docs/plans/2026-07-13-remontoire-v0.1.md).
+[`docs/PRD.md`](docs/PRD.md), the implementation plan is in
+[`docs/plans/2026-07-13-remontoire-v0.1.md`](docs/plans/2026-07-13-remontoire-v0.1.md),
+and the zklw deployment runbook is in
+[`docs/operations/zklw.md`](docs/operations/zklw.md).
 
 ## License
 
