@@ -25,6 +25,14 @@ assert_not_contains() {
   fi
 }
 
+file_mode() {
+  if stat -c '%a' "$1" >/dev/null 2>&1; then
+    stat -c '%a' "$1"
+  else
+    stat -f '%Lp' "$1"
+  fi
+}
+
 [[ -f "${SERVICE}" ]] || fail "missing service unit"
 [[ -f "${TIMER}" ]] || fail "missing timer unit"
 [[ -x "${INSTALLER}" ]] || fail "missing executable installer"
@@ -33,6 +41,7 @@ bash -n "${INSTALLER}"
 for setting in \
   'Type=oneshot' \
   'ConditionFileIsExecutable=%h/.local/bin/remontoire' \
+  'ConditionPathExists=%h/.codex/auth.json' \
   'ExecStartPre=%h/.local/share/remontoire/wait-network.sh' \
   'cycle --mode=proposal --json' \
   'TimeoutStartSec=30min' \
@@ -48,10 +57,16 @@ for setting in \
   assert_contains "${SERVICE}" "${setting}"
 done
 assert_not_contains "${SERVICE}" 'ReadWritePaths=%h/projects '
-assert_not_contains "${SERVICE}" '%h/.codex'
+if grep -Eq '^ReadWritePaths=(%h/\.codex|.*[[:space:]]%h/\.codex)([[:space:]]|$)' "${SERVICE}"; then
+  fail "${SERVICE} grants write access to the Codex config directory"
+fi
 assert_not_contains "${SERVICE}" '%h/.claude'
 assert_not_contains "${SERVICE}" '%h/projects/Sylveste/docs'
 assert_contains "${SERVICE}" 'ReadWritePaths=%h/.clavain'
+assert_contains "${SERVICE}" 'Environment=CODEX_HOME=%h/.local/state/remontoire/codex'
+grep -Eq '^ReadWritePaths=.* %h/\.codex/auth\.json$' "${SERVICE}" || fail "${SERVICE} does not grant write access to only the Codex auth file"
+assert_contains "${SERVICE}" 'BindPaths=%h/.codex/auth.json:%h/.local/state/remontoire/codex/auth.json'
+assert_not_contains "${SERVICE}" 'BindReadOnlyPaths=%h/.codex/auth.json'
 [[ -x "${ROOT}/scripts/wait-network.sh" ]] || fail "missing executable network preflight"
 bash -n "${ROOT}/scripts/wait-network.sh"
 assert_contains "${ROOT}/scripts/wait-network.sh" 'DEADLINE_SECONDS=300'
@@ -123,6 +138,9 @@ INSTALL_ARGS=(
 [[ -f "${XDG_CONFIG_HOME}/systemd/user/remontoire.service" ]] || fail "service was not installed"
 [[ -f "${HOME}/.local/share/remontoire/schemas/judgment-v1.json" ]] || fail "schemas were not installed"
 [[ -x "${HOME}/.local/share/remontoire/wait-network.sh" ]] || fail "network preflight was not installed"
+CODEX_AUTH_PLACEHOLDER="${XDG_STATE_HOME}/remontoire/codex/auth.json"
+[[ -f "${CODEX_AUTH_PLACEHOLDER}" && ! -L "${CODEX_AUTH_PLACEHOLDER}" ]] || fail "Codex auth bind placeholder was not installed as a regular file"
+[[ "$(file_mode "${CODEX_AUTH_PLACEHOLDER}")" == "600" ]] || fail "Codex auth bind placeholder mode is not 0600"
 assert_contains "${XDG_CONFIG_HOME}/systemd/user/remontoire.service" "WorkingDirectory=${HOME}/projects"
 assert_contains "${XDG_CONFIG_HOME}/systemd/user/remontoire.service" "--config=${XDG_CONFIG_HOME}/remontoire/config.json"
 if grep -Fq -- 'enable --now remontoire.timer' "${SYSTEMCTL_LOG}"; then

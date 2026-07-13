@@ -3,6 +3,7 @@ Description=Remontoire portfolio proposal cycle
 Documentation=https://github.com/mistakeknot/Remontoire
 ConditionFileIsExecutable=%h/.local/bin/remontoire
 ConditionPathExists=%h/.config/remontoire/config.json
+ConditionPathExists=%h/.codex/auth.json
 
 [Service]
 Type=oneshot
@@ -13,17 +14,20 @@ TimeoutStartSec=30min
 KillSignal=SIGTERM
 UMask=0077
 
-# Scheduled proposal cycles may write canonical state and cycle evidence only.
+# Scheduled proposal cycles may write canonical state, cycle evidence, and the
+# single Codex token bundle needed to persist authentication refreshes.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.clavain -%h/projects/.clavain -%h/projects/.beads %h/.beads %h/.local/state/remontoire %h/.local/state/remontoire/cycles
+ReadWritePaths=%h/.clavain -%h/projects/.clavain -%h/projects/.beads %h/.beads %h/.local/state/remontoire %h/.local/state/remontoire/cycles %h/.codex/auth.json
+BindPaths=%h/.codex/auth.json:%h/.local/state/remontoire/codex/auth.json
 RestrictSUIDSGID=true
 LockPersonality=true
 
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=XDG_CACHE_HOME=%h/.local/state/remontoire/cache
+Environment=CODEX_HOME=%h/.local/state/remontoire/codex
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=remontoire

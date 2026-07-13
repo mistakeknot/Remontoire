@@ -128,6 +128,8 @@ SHARE_DIR="${DATA_HOME}/remontoire"
 SCHEMA_DIR="${SHARE_DIR}/schemas"
 ARTIFACT_ROOT="${STATE_HOME}/remontoire/cycles"
 WORKTREE_ROOT="${PROJECT_DIR}/.worktrees/remontoire"
+CODEX_RUNTIME_HOME="${STATE_HOME}/remontoire/codex"
+CODEX_AUTH_PLACEHOLDER="${CODEX_RUNTIME_HOME}/auth.json"
 
 log_action() {
   printf '%s\n' "$*"
@@ -382,7 +384,18 @@ mkdir -p \
   "${SYSTEMD_DIR}" \
   "${SCHEMA_DIR}" \
   "${ARTIFACT_ROOT}" \
+  "${CODEX_RUNTIME_HOME}" \
   "${WORKTREE_ROOT}"
+
+if [[ -e "${CODEX_AUTH_PLACEHOLDER}" || -L "${CODEX_AUTH_PLACEHOLDER}" ]]; then
+  if [[ ! -f "${CODEX_AUTH_PLACEHOLDER}" || -L "${CODEX_AUTH_PLACEHOLDER}" ]]; then
+    printf 'install: Codex auth bind destination must be a regular file: %s\n' "${CODEX_AUTH_PLACEHOLDER}" >&2
+    exit 1
+  fi
+  chmod 0600 "${CODEX_AUTH_PLACEHOLDER}"
+else
+  install -m 0600 /dev/null "${CODEX_AUTH_PLACEHOLDER}"
+fi
 
 install_atomic 0755 "${BINARY_SOURCE}" "${BIN_DEST}"
 render_service >"${TMP}/remontoire.service"

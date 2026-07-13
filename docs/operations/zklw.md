@@ -13,11 +13,16 @@ changes.
 | Operator config | `~/.config/remontoire/config.json` |
 | Schemas | `~/.local/share/remontoire/schemas/` |
 | Cycle evidence | `~/.local/state/remontoire/cycles/` |
+| Codex runtime home | `~/.local/state/remontoire/codex/` |
 | Experiment worktrees | `~/projects/.worktrees/remontoire/` |
 | User units | `~/.config/systemd/user/remontoire.{service,timer}` |
 
 The config contains paths and backend choices only. Do not add credentials to
-the config or unit. Codex and Claude use the existing `mk` user sessions.
+the config or unit. The proposal unit gives Codex a dedicated writable runtime
+home and binds only `~/.codex/auth.json` into it. That one file remains writable
+so Codex can persist token refreshes; the rest of `~/.codex` stays read-only.
+Claude uses the existing `mk` user session during manual approved execution or
+review.
 
 ## Install Without Activation
 
@@ -53,6 +58,7 @@ Run every check before the first service invocation:
 
 ```bash
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" doctor --json
+test -r "$HOME/.codex/auth.json" && test -w "$HOME/.codex/auth.json"
 systemd-analyze verify ~/.config/systemd/user/remontoire.service ~/.config/systemd/user/remontoire.timer
 systemctl --user status remontoire.timer --no-pager
 systemctl --user is-enabled remontoire.timer
