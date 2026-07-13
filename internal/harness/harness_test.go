@@ -287,7 +287,7 @@ func TestClaudeJudgeUsesReadOnlyToolsAndParsesStructuredEnvelope(t *testing.T) {
 		t.Fatalf("judgment/meta = %#v %#v", judgment, meta)
 	}
 	want := []string{
-		"-p", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
+		"-p", "--safe-mode", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
 		"--permission-mode=dontAsk", "--tools=Read,Glob,Grep", "--allowedTools=Read,Glob,Grep",
 		"--disallowedTools=Bash,Edit,Write,WebFetch,WebSearch,NotebookEdit",
 		"--model=sonnet", "--max-budget-usd=1.25", "--json-schema=" + schema, "--output-format=json",
@@ -326,6 +326,9 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 		t.Fatalf("usage metadata = %#v", meta)
 	}
 	args := runner.calls[0].Args
+	if !containsArg(args, "--safe-mode") {
+		t.Fatalf("Claude execution did not disable inherited customizations: %#v", args)
+	}
 	allowed := findPrefix(args, "--allowedTools=")
 	if !strings.Contains(allowed, "Bash(go *)") || strings.Contains(allowed, "Bash(git *)") || strings.Contains(allowed, "Bash(*)") {
 		t.Fatalf("unsafe Claude allowed tools: %s", allowed)
@@ -336,6 +339,15 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 			t.Fatalf("missing disallowed tool %s: %s", tool, disallowed)
 		}
 	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }
 
 func findPrefix(args []string, prefix string) string {

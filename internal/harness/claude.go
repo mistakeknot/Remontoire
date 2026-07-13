@@ -63,7 +63,7 @@ func (c Claude) Execute(ctx context.Context, request ExecutionRequest) (Executio
 	program := filepath.Base(request.Contract.Benchmark[0])
 	allowed := "Read,Glob,Grep,Edit,Write,Bash(" + program + " *)"
 	args := []string{
-		"-p", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
+		"-p", "--safe-mode", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
 		"--permission-mode=dontAsk",
 		"--tools=Read,Glob,Grep,Edit,Write,Bash",
 		"--allowedTools=" + allowed,
@@ -120,7 +120,7 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 
 func (c Claude) readOnlyArgs(schema string, maxBudget float64) []string {
 	args := []string{
-		"-p", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
+		"-p", "--safe-mode", "--no-session-persistence", "--disable-slash-commands", "--no-chrome",
 		"--permission-mode=dontAsk",
 		"--tools=Read,Glob,Grep",
 		"--allowedTools=Read,Glob,Grep",
