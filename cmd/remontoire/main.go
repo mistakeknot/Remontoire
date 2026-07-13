@@ -42,9 +42,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, load appl
 		configPath = os.Getenv("REMONTOIRE_CONFIG")
 	}
 	if configPath == "" {
-		configDir, dirErr := os.UserConfigDir()
-		if dirErr != nil {
-			return configFailure(stderr, jsonMode, fmt.Errorf("resolve config directory: %w", dirErr))
+		configDir := os.Getenv("XDG_CONFIG_HOME")
+		if configDir != "" && !filepath.IsAbs(configDir) {
+			return configFailure(stderr, jsonMode, fmt.Errorf("XDG_CONFIG_HOME must be absolute"))
+		}
+		if configDir == "" {
+			homeDir, dirErr := os.UserHomeDir()
+			if dirErr != nil {
+				return configFailure(stderr, jsonMode, fmt.Errorf("resolve home directory: %w", dirErr))
+			}
+			configDir = filepath.Join(homeDir, ".config")
 		}
 		configPath = filepath.Join(configDir, "remontoire", "config.json")
 	}

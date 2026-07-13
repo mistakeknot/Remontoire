@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -38,6 +40,56 @@ func TestRunLoadsExplicitConfigAndPassesRemainingArguments(t *testing.T) {
 	code := run(context.Background(), []string{"doctor", "--config=/tmp/remontoire.json", "--json"}, &stdout, &stderr, loader)
 	if code != 0 || loaded != "/tmp/remontoire.json" || !reflect.DeepEqual(runner.args, []string{"doctor", "--json"}) || stderr.Len() != 0 {
 		t.Fatalf("code=%d loaded=%q args=%#v stderr=%q", code, loaded, runner.args, stderr.String())
+	}
+}
+
+func TestRunDefaultsToXDGStyleConfigPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("REMONTOIRE_CONFIG", "")
+	runner := &fakeRunner{}
+	loaded := ""
+	loader := func(path string) (commandRunner, error) {
+		loaded = path
+		return runner, nil
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"doctor"}, &stdout, &stderr, loader)
+	want := filepath.Join(os.Getenv("HOME"), ".config", "remontoire", "config.json")
+	if code != 0 || loaded != want || stderr.Len() != 0 {
+		t.Fatalf("code=%d loaded=%q want=%q stderr=%q", code, loaded, want, stderr.String())
+	}
+}
+
+func TestRunHonorsXDGConfigHome(t *testing.T) {
+	xdgHome := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", xdgHome)
+	t.Setenv("REMONTOIRE_CONFIG", "")
+	loaded := ""
+	loader := func(path string) (commandRunner, error) {
+		loaded = path
+		return &fakeRunner{}, nil
+	}
+	code := run(context.Background(), []string{"doctor"}, io.Discard, io.Discard, loader)
+	want := filepath.Join(xdgHome, "remontoire", "config.json")
+	if code != 0 || loaded != want {
+		t.Fatalf("code=%d loaded=%q want=%q", code, loaded, want)
+	}
+}
+
+func TestRunRejectsRelativeXDGConfigHome(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", "relative")
+	t.Setenv("REMONTOIRE_CONFIG", "")
+	called := false
+	loader := func(string) (commandRunner, error) {
+		called = true
+		return &fakeRunner{}, nil
+	}
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"doctor"}, io.Discard, &stderr, loader)
+	if code != app.ExitUsage || called || !strings.Contains(stderr.String(), "XDG_CONFIG_HOME must be absolute") {
+		t.Fatalf("code=%d called=%v stderr=%q", code, called, stderr.String())
 	}
 }
 
