@@ -282,6 +282,24 @@ func (c Intercore) Observation(ctx context.Context, limit int) ([]Discovery, Int
 	if err := json.Unmarshal(result.Stdout, &discoveries); err != nil {
 		return nil, InterestProfile{}, fmt.Errorf("decode discoveries: %w", err)
 	}
+	for i := range discoveries {
+		id := strings.TrimSpace(discoveries[i].ID)
+		if id == "" {
+			return nil, InterestProfile{}, fmt.Errorf("discovery list returned an empty id")
+		}
+		result, err = c.run(ctx, nil, "--json", "discovery", "status", id)
+		if err != nil {
+			return nil, InterestProfile{}, fmt.Errorf("load discovery %q: %w", id, err)
+		}
+		var detail Discovery
+		if err := json.Unmarshal(result.Stdout, &detail); err != nil {
+			return nil, InterestProfile{}, fmt.Errorf("decode discovery %q: %w", id, err)
+		}
+		if detail.ID != id {
+			return nil, InterestProfile{}, fmt.Errorf("discovery detail id %q does not match listed id %q", detail.ID, id)
+		}
+		discoveries[i] = detail
+	}
 	result, err = c.run(ctx, nil, "--json", "discovery", "profile")
 	if err != nil {
 		return nil, InterestProfile{}, err

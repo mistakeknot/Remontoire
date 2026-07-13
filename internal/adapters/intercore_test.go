@@ -218,6 +218,7 @@ func TestIntercoreReadsRunStatus(t *testing.T) {
 func TestIntercoreReadsCanonicalObservation(t *testing.T) {
 	runner := &recordingRunner{}
 	runner.queue(`[{"id":"disc-1","title":"A"}]`)
+	runner.queue(`{"id":"disc-1","title":"A","raw_metadata":"{\"contract\":\"safe\"}"}`)
 	runner.queue(`{"keyword_weights":"{}","source_weights":"{}"}`)
 	runner.queue(`{"schema_version":"remontoire.cycle/v1","id":"cycle-1","portfolio":"sylveste","mode":"shadow","stage":"completed","created_at":"2026-07-13T00:00:00Z","updated_at":"2026-07-13T00:00:00Z"}`)
 	ic := Intercore{Binary: "ic", Runner: runner}
@@ -226,7 +227,7 @@ func TestIntercoreReadsCanonicalObservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(discoveries) != 1 || discoveries[0].ID != "disc-1" || profile.KeywordWeights != "{}" {
+	if len(discoveries) != 1 || discoveries[0].ID != "disc-1" || discoveries[0].RawMetadata != `{"contract":"safe"}` || profile.KeywordWeights != "{}" {
 		t.Fatalf("observation = %#v %#v", discoveries, profile)
 	}
 	cycle, err := ic.GetCycle(context.Background(), "cycle-1")
@@ -239,6 +240,7 @@ func TestIntercoreReadsCanonicalObservation(t *testing.T) {
 
 	want := [][]string{
 		{"--json", "discovery", "list", "--limit=50"},
+		{"--json", "discovery", "status", "disc-1"},
 		{"--json", "discovery", "profile"},
 		{"state", "get", "remontoire.cycle", "cycle-1"},
 	}
@@ -246,6 +248,18 @@ func TestIntercoreReadsCanonicalObservation(t *testing.T) {
 		if got := runner.calls[i].Invocation.Args; !reflect.DeepEqual(got, want[i]) {
 			t.Errorf("call %d = %#v, want %#v", i, got, want[i])
 		}
+	}
+}
+
+func TestIntercoreRejectsMismatchedDiscoveryDetail(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue(`[{"id":"disc-1","title":"A"}]`)
+	runner.queue(`{"id":"disc-2","title":"B","raw_metadata":"{}"}`)
+	ic := Intercore{Binary: "ic", Runner: runner}
+
+	_, _, err := ic.Observation(context.Background(), 50)
+	if err == nil || !strings.Contains(err.Error(), "disc-1") || !strings.Contains(err.Error(), "disc-2") {
+		t.Fatalf("error = %v, want discovery ID mismatch", err)
 	}
 }
 
