@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          gofmt -w .
+          git diff --exit-code
+
+      - name: Run tests
+        run: go test -count=1 ./...
+
+      - name: Validate published schemas
+        run: go test -count=1 ./schemas
+
+      - name: Run race tests
+        run: go test -race -count=1 ./...
+
+      - name: Run vet
+        run: go vet ./...
+
+      - name: Build CLI
+        run: go build -trimpath -o /tmp/remontoire ./cmd/remontoire
+
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+
+      - name: Check shell scripts
+        run: shellcheck scripts/install.sh scripts/wait-network.sh tests/deploy_test.sh tests/ci_test.sh
+
+      - name: Test deployment lifecycle
+        run: bash tests/deploy_test.sh
+
+      - name: Check installer sources
+        run: scripts/install.sh --check
+
+      - name: Check CI contract
+        run: bash tests/ci_test.sh
