@@ -72,7 +72,8 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 	ic := Intercore{Binary: "ic", Dir: "/portfolio", Runner: runner}
 	ctx := context.Background()
 
-	runID, err := ic.CreateCycleRun(ctx, "/repo", "cycle-1", map[string]any{"mode": "proposal"})
+	metadata := map[string]any{"mode": "proposal"}
+	runID, err := ic.CreateCycleRun(ctx, "/repo", "cycle-1", metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,12 +93,15 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 	if receiptID != "rcpt-9" {
 		t.Fatalf("receipt id = %q", receiptID)
 	}
+	if _, mutated := metadata["producer"]; mutated {
+		t.Fatalf("CreateCycleRun mutated caller metadata: %#v", metadata)
+	}
 
 	wantCalls := [][]string{
 		{"--json", "run", "list", "--scope=cycle-1"},
-		{"--json", "run", "create", "--project=/repo", "--goal=Remontoire portfolio cycle cycle-1", "--scope-id=cycle-1", `--phases=["observe","rank","propose","execute","review","compound"]`, `--metadata={"mode":"proposal"}`},
+		{"--json", "run", "create", "--project=/repo", "--goal=Remontoire portfolio cycle cycle-1", "--scope-id=cycle-1", `--phases=["observe","rank","propose","execute","review","compound"]`, `--metadata={"mode":"proposal","producer":{"class":"portfolio","kind":"agency","name":"remontoire"}}`},
 		{"run", "replay", "record", "run-123", "--kind=beads", "--key=beads.json", `--payload={"sha256":"abc"}`, "--artifact-ref=.remontoire/cycles/cycle-1/beads.json"},
-		{"events", "record", "--source=interspect", "--type=remontoire.stage", "--run=run-123", "--project=/repo", "--idempotency-key=remontoire:cycle-1:observing", `--payload={"agent_name":"remontoire","context":"{\"cycle_id\":\"cycle-1\",\"stage\":\"observing\"}"}`},
+		{"events", "record", "--source=agency", "--type=agency.stage", "--run=run-123", "--project=/repo", "--idempotency-key=remontoire:cycle-1:observing", `--payload={"agency_name":"remontoire","cycle_id":"cycle-1","stage":"observing"}`},
 		{"--json", "receipt", "emit", "--agent=remontoire", "--model=codex", "--content-hash=" + strings.Repeat("a", 64), "--parent-run=run-123"},
 	}
 	for i, want := range wantCalls {
@@ -108,7 +112,7 @@ func TestIntercoreRunReplayEventAndReceiptArgv(t *testing.T) {
 }
 
 func TestIntercoreCreateCycleRunReconcilesCommittedAmbiguousResponse(t *testing.T) {
-	existing := `[{"id":"run-123","project_dir":"/repo","goal":"Remontoire portfolio cycle cycle-1","status":"active","phase":"observe","scope_id":"cycle-1","phases":["observe","rank","propose","execute","review","compound"],"metadata":"{\"mode\":\"proposal\",\"portfolio\":\"sylveste\"}"}]`
+	existing := `[{"id":"run-123","project_dir":"/repo","goal":"Remontoire portfolio cycle cycle-1","status":"active","phase":"observe","scope_id":"cycle-1","phases":["observe","rank","propose","execute","review","compound"],"metadata":"{\"mode\":\"proposal\",\"portfolio\":\"sylveste\",\"producer\":{\"class\":\"portfolio\",\"kind\":\"agency\",\"name\":\"remontoire\"}}"}]`
 	for name, response := range map[string]queuedResponse{
 		"commit then timeout": {Err: context.DeadlineExceeded},
 		"malformed response":  {Result: Result{Stdout: []byte(`{"id":`)}},

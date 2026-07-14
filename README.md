@@ -109,6 +109,11 @@ capabilities, durable contracts, and authority boundaries for Interverse,
 Intercore, and Clavain consumers. Remontoire remains an L2 agency rather than an
 Interverse plugin or a Clavain fleet worker.
 
+Every cycle run records canonical producer metadata (`kind=agency`,
+`name=remontoire`, `class=portfolio`). Stage transitions emit typed
+`source=agency`, `type=agency.stage` events, so `ic events list-agency` provides
+history and `ic situation snapshot` provides the latest operator status.
+
 The ownership boundary is deliberate:
 
 - Remontoire owns portfolio judgment and its CLI lifecycle.

@@ -62,7 +62,7 @@ Each transition follows this order:
 
 1. Validate the precondition and policy locally.
 2. Persist the new cycle document with `ic state set`.
-3. Record the corresponding `ic events record` event.
+3. Record an idempotent `source=agency`, `type=agency.stage` event.
 4. Rewrite the local receipt projection atomically.
 
 The Intercore document is canonical. The local JSON file under
@@ -73,6 +73,11 @@ Only one active cycle may exist for a configured portfolio. `ic lock acquire`
 enforces this across processes. A stable idempotency key on every mutating
 action prevents duplicate beads, execution attempts, feedback, and terminal
 receipts after restart.
+
+The associated Intercore run carries `producer.kind=agency`,
+`producer.name=remontoire`, and `producer.class=portfolio`. Historical stage
+events are available through `ic events list-agency`; the latest per-agency
+projection is available through `ic situation snapshot`.
 
 ## Observation Envelope
 

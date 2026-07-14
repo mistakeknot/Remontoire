@@ -126,7 +126,7 @@ func (c Intercore) GetLatestCycle(ctx context.Context, portfolio string) (string
 }
 
 func (c Intercore) CreateCycleRun(ctx context.Context, project, cycleID string, metadata map[string]any) (string, error) {
-	metadataJSON, err := json.Marshal(metadata)
+	metadataJSON, err := json.Marshal(withAgencyProducer(metadata))
 	if err != nil {
 		return "", fmt.Errorf("marshal run metadata: %w", err)
 	}
@@ -156,6 +156,19 @@ func (c Intercore) CreateCycleRun(ctx context.Context, project, cycleID string, 
 		return c.reconcileCycleRun(ctx, project, cycleID, metadataJSON, fmt.Errorf("run create returned no id"))
 	}
 	return payload.ID, nil
+}
+
+func withAgencyProducer(metadata map[string]any) map[string]any {
+	result := make(map[string]any, len(metadata)+1)
+	for key, value := range metadata {
+		result[key] = value
+	}
+	result["producer"] = map[string]string{
+		"kind":  "agency",
+		"name":  "remontoire",
+		"class": "portfolio",
+	}
+	return result
 }
 
 func (c Intercore) reconcileCycleRun(ctx context.Context, project, cycleID string, metadataJSON []byte, cause error) (string, error) {
@@ -253,18 +266,18 @@ func (c Intercore) RecordReplayInput(ctx context.Context, runID, kind, key, payl
 }
 
 func (c Intercore) RecordStageEvent(ctx context.Context, runID, project string, stage domain.Stage, cycleID string) error {
-	contextJSON, err := json.Marshal(map[string]string{"cycle_id": cycleID, "stage": string(stage)})
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(map[string]string{"agent_name": "remontoire", "context": string(contextJSON)})
+	payload, err := json.Marshal(map[string]string{
+		"agency_name": "remontoire",
+		"cycle_id":    cycleID,
+		"stage":       string(stage),
+	})
 	if err != nil {
 		return err
 	}
 	_, err = c.run(ctx, nil,
 		"events", "record",
-		"--source=interspect",
-		"--type=remontoire.stage",
+		"--source=agency",
+		"--type=agency.stage",
 		"--run="+runID,
 		"--project="+project,
 		"--idempotency-key=remontoire:"+cycleID+":"+string(stage),
