@@ -1,0 +1,60 @@
+{
+  "$schema": "./schemas/agency-v1.json",
+  "schema_version": "interverse.agency/v1",
+  "kind": "agency",
+  "name": "remontoire",
+  "display_name": "Remontoire",
+  "description": "Bounded portfolio agency that selects, executes, reviews, and compounds one evidence-backed experiment at a time.",
+  "version": "0.1.0",
+  "layer": "L2",
+  "class": "portfolio",
+  "repository": "https://github.com/mistakeknot/Remontoire",
+  "install": {
+    "script": "scripts/install.sh",
+    "check_args": ["--check"],
+    "default_args": ["--no-enable"],
+    "supported_os": ["linux"]
+  },
+  "runtime": {
+    "binary": "remontoire",
+    "doctor_args": ["doctor", "--json"],
+    "status_args": ["status", "--json"],
+    "service_manager": "systemd-user",
+    "service": "remontoire.service",
+    "timer": "remontoire.timer"
+  },
+  "capabilities": [
+    "portfolio.observe",
+    "portfolio.rank",
+    "experiment.propose",
+    "experiment.execute.approved",
+    "experiment.review",
+    "roadmap.compound",
+    "receipt.emit",
+    "receipt.replay"
+  ],
+  "authority": {
+    "may": [
+      "evidence.read",
+      "portfolio.rank",
+      "experiment.propose",
+      "experiment.execute.approved",
+      "experiment.review",
+      "backlog.compound",
+      "roadmap.regenerate",
+      "receipt.emit"
+    ],
+    "requires_approval": ["experiment.execute"],
+    "never": ["git.push", "git.merge", "deployment.deploy", "release.publish"]
+  },
+  "contracts": [
+    "remontoire.cycle/v1",
+    "remontoire.observation/v1",
+    "remontoire.judgment/v1",
+    "remontoire.evidence-contract/v1",
+    "remontoire.approval/v1",
+    "remontoire.review/v1",
+    "remontoire.outcome/v1",
+    "remontoire.receipt/v1"
+  ]
+}

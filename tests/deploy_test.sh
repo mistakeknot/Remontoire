@@ -138,6 +138,8 @@ INSTALL_ARGS=(
 [[ -f "${XDG_CONFIG_HOME}/remontoire/config.json" ]] || fail "config was not installed"
 [[ -f "${XDG_CONFIG_HOME}/systemd/user/remontoire.service" ]] || fail "service was not installed"
 [[ -f "${HOME}/.local/share/remontoire/schemas/judgment-v1.json" ]] || fail "schemas were not installed"
+[[ -f "${HOME}/.local/share/remontoire/schemas/agency-v1.json" ]] || fail "agency schema was not installed"
+[[ -f "${HOME}/.local/share/remontoire/agency.json" ]] || fail "agency manifest was not installed"
 [[ -x "${HOME}/.local/share/remontoire/wait-network.sh" ]] || fail "network preflight was not installed"
 CODEX_AUTH_PLACEHOLDER="${XDG_STATE_HOME}/remontoire/codex/auth.json"
 [[ -f "${CODEX_AUTH_PLACEHOLDER}" && ! -L "${CODEX_AUTH_PLACEHOLDER}" ]] || fail "Codex auth bind placeholder was not installed as a regular file"
@@ -201,6 +203,7 @@ chmod 0755 "${ORPHAN_INSTALLER}"
 [[ ! -e "${HOME}/.local/bin/remontoire" ]] || fail "uninstall left the binary"
 [[ ! -e "${XDG_CONFIG_HOME}/systemd/user/remontoire.timer" ]] || fail "uninstall left the timer"
 [[ ! -e "${HOME}/.local/share/remontoire/wait-network.sh" ]] || fail "uninstall left the network preflight"
+[[ ! -e "${HOME}/.local/share/remontoire/agency.json" ]] || fail "uninstall left the agency manifest"
 [[ -f "${XDG_CONFIG_HOME}/remontoire/config.json" ]] || fail "uninstall removed operator config"
 
 printf 'deploy_test: ok\n'

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 WORKFLOW="${ROOT}/.github/workflows/ci.yml"
+README="${ROOT}/README.md"
 
 fail() {
   printf 'ci_test: %s\n' "$*" >&2
@@ -28,4 +29,17 @@ grep -Fq -- 'contents: read' "${WORKFLOW}" || fail "workflow permissions are not
 grep -Fq -- 'uses: actions/checkout@v7' "${WORKFLOW}" || fail "workflow checkout action is not on the supported runtime"
 grep -Fq -- 'uses: actions/setup-go@v6' "${WORKFLOW}" || fail "workflow setup-go action is not on the supported runtime"
 grep -Fq -- 'cache: false' "${WORKFLOW}" || fail "workflow should not cache a module with no go.sum"
+
+for operator_command in \
+  'scripts/install.sh --check' \
+  'doctor --json' \
+  'cycle --mode=shadow --json' \
+  'cycle --mode=proposal --json' \
+  'approve CYCLE_ID --actor=' \
+  'decline CYCLE_ID --actor=' \
+  'resume CYCLE_ID --json' \
+  'receipt replay CYCLE_ID --json' \
+  'systemctl --user enable --now remontoire.timer'; do
+  grep -Fq -- "${operator_command}" "${README}" || fail "README is missing operator command: ${operator_command}"
+done
 printf 'ci_test: ok\n'

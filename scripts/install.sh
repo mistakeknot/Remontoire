@@ -156,7 +156,9 @@ source_check() {
   for file in \
     "${SERVICE_SOURCE}" \
     "${TIMER_SOURCE}" \
+    "${ROOT}/agency.json" \
     "${ROOT}/scripts/wait-network.sh" \
+    "${ROOT}/schemas/agency-v1.json" \
     "${ROOT}/schemas/judgment-v1.json" \
     "${ROOT}/schemas/execution-v1.json" \
     "${ROOT}/schemas/review-v1.json"; do
@@ -291,7 +293,9 @@ remove_installation() {
   fi
   rm -f "${BIN_DEST}" "${SERVICE_DEST}" "${TIMER_DEST}"
   rm -f \
+    "${SHARE_DIR}/agency.json" \
     "${SHARE_DIR}/wait-network.sh" \
+    "${SCHEMA_DIR}/agency-v1.json" \
     "${SCHEMA_DIR}/judgment-v1.json" \
     "${SCHEMA_DIR}/execution-v1.json" \
     "${SCHEMA_DIR}/review-v1.json"
@@ -401,7 +405,9 @@ install_atomic 0755 "${BINARY_SOURCE}" "${BIN_DEST}"
 render_service >"${TMP}/remontoire.service"
 install_atomic 0644 "${TMP}/remontoire.service" "${SERVICE_DEST}"
 install_atomic 0644 "${TIMER_SOURCE}" "${TIMER_DEST}"
+install_atomic 0644 "${ROOT}/agency.json" "${SHARE_DIR}/agency.json"
 install_atomic 0755 "${ROOT}/scripts/wait-network.sh" "${SHARE_DIR}/wait-network.sh"
+install_atomic 0644 "${ROOT}/schemas/agency-v1.json" "${SCHEMA_DIR}/agency-v1.json"
 install_atomic 0644 "${ROOT}/schemas/judgment-v1.json" "${SCHEMA_DIR}/judgment-v1.json"
 install_atomic 0644 "${ROOT}/schemas/execution-v1.json" "${SCHEMA_DIR}/execution-v1.json"
 install_atomic 0644 "${ROOT}/schemas/review-v1.json" "${SCHEMA_DIR}/review-v1.json"

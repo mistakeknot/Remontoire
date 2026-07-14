@@ -13,7 +13,7 @@ import (
 )
 
 func TestPublishedSchemasAreValidRootContracts(t *testing.T) {
-	for _, name := range []string{"judgment-v1.json", "execution-v1.json", "review-v1.json"} {
+	for _, name := range []string{"agency-v1.json", "judgment-v1.json", "execution-v1.json", "review-v1.json"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(name)
 			if err != nil {
@@ -56,7 +56,7 @@ func TestPublishedSchemasAreValidRootContracts(t *testing.T) {
 }
 
 func TestPublishedSchemasUseTypedConstAndEnumNodes(t *testing.T) {
-	for _, name := range []string{"judgment-v1.json", "execution-v1.json", "review-v1.json"} {
+	for _, name := range []string{"agency-v1.json", "judgment-v1.json", "execution-v1.json", "review-v1.json"} {
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(name)
 			if err != nil {
@@ -68,6 +68,77 @@ func TestPublishedSchemasUseTypedConstAndEnumNodes(t *testing.T) {
 			}
 			validateTypedConstAndEnumNodes(t, "$", schema)
 		})
+	}
+}
+
+func TestAgencyManifestDeclaresFirstClassBoundaries(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "agency.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := strictjson.RejectDuplicateKeys(data); err != nil {
+		t.Fatalf("duplicate JSON key: %v", err)
+	}
+	var manifest struct {
+		SchemaVersion string `json:"schema_version"`
+		Kind          string `json:"kind"`
+		Name          string `json:"name"`
+		Layer         string `json:"layer"`
+		Class         string `json:"class"`
+		Version       string `json:"version"`
+		Repository    string `json:"repository"`
+		Install       struct {
+			Script      string   `json:"script"`
+			CheckArgs   []string `json:"check_args"`
+			DefaultArgs []string `json:"default_args"`
+			SupportedOS []string `json:"supported_os"`
+		} `json:"install"`
+		Runtime struct {
+			Binary         string   `json:"binary"`
+			DoctorArgs     []string `json:"doctor_args"`
+			StatusArgs     []string `json:"status_args"`
+			ServiceManager string   `json:"service_manager"`
+			Service        string   `json:"service"`
+			Timer          string   `json:"timer"`
+		} `json:"runtime"`
+		Capabilities []string `json:"capabilities"`
+		Authority    struct {
+			RequiresApproval []string `json:"requires_approval"`
+			Never            []string `json:"never"`
+		} `json:"authority"`
+		Contracts []string `json:"contracts"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("decode manifest: %v", err)
+	}
+	if manifest.SchemaVersion != "interverse.agency/v1" || manifest.Kind != "agency" || manifest.Name != "remontoire" {
+		t.Fatalf("unexpected manifest identity: %#v", manifest)
+	}
+	if manifest.Layer != "L2" || manifest.Class != "portfolio" || manifest.Version != "0.1.0" {
+		t.Fatalf("unexpected agency classification: layer=%q class=%q version=%q", manifest.Layer, manifest.Class, manifest.Version)
+	}
+	if manifest.Repository != "https://github.com/mistakeknot/Remontoire" {
+		t.Fatalf("unexpected repository: %q", manifest.Repository)
+	}
+	if manifest.Install.Script != "scripts/install.sh" || !reflect.DeepEqual(manifest.Install.CheckArgs, []string{"--check"}) ||
+		!reflect.DeepEqual(manifest.Install.DefaultArgs, []string{"--no-enable"}) || !reflect.DeepEqual(manifest.Install.SupportedOS, []string{"linux"}) {
+		t.Fatalf("unexpected install contract: %#v", manifest.Install)
+	}
+	if manifest.Runtime.Binary != "remontoire" || manifest.Runtime.ServiceManager != "systemd-user" ||
+		manifest.Runtime.Service != "remontoire.service" || manifest.Runtime.Timer != "remontoire.timer" ||
+		!reflect.DeepEqual(manifest.Runtime.DoctorArgs, []string{"doctor", "--json"}) ||
+		!reflect.DeepEqual(manifest.Runtime.StatusArgs, []string{"status", "--json"}) {
+		t.Fatalf("unexpected runtime contract: %#v", manifest.Runtime)
+	}
+	if len(manifest.Capabilities) == 0 || len(manifest.Contracts) == 0 {
+		t.Fatal("capabilities and contracts must be declared")
+	}
+	if !reflect.DeepEqual(manifest.Authority.RequiresApproval, []string{"experiment.execute"}) {
+		t.Fatalf("unexpected approval boundary: %v", manifest.Authority.RequiresApproval)
+	}
+	wantNever := []string{"git.push", "git.merge", "deployment.deploy", "release.publish"}
+	if !reflect.DeepEqual(manifest.Authority.Never, wantNever) {
+		t.Fatalf("unexpected prohibited authority: %v", manifest.Authority.Never)
 	}
 }
 
