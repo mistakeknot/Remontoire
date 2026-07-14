@@ -46,10 +46,24 @@ Verify the installed runtime:
 ```bash
 ~/.local/bin/remontoire doctor --json
 ~/.local/bin/remontoire status --json
+~/.local/bin/remontoire attention --json
 ```
 
 The default config is `~/.config/remontoire/config.json`. Set
 `REMONTOIRE_CONFIG` or pass `--config` only when operating another deployment.
+
+## Autonomous Use
+
+The scheduled service is exception-driven. Agent harnesses should call only
+`remontoire attention --json` at session start. That read-only projection
+contains the latest canonical cycle plus ready beads labeled
+`remontoire-promotion`; it does not create, approve, resume, or repair work.
+
+Consumers stay silent for normal and terminal cycle stages. They surface an
+operator command only when a cycle needs a principal approval decision, an
+explicit resume, receipt recovery, or diagnosis. Promotion beads enter the
+normal next-goal ranking alongside other ready work. Selecting a promotion with
+`/goal` starts downstream implementation and does not alter its source cycle.
 
 ## Run A Cycle
 
