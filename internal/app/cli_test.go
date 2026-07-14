@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/cycle"
 	"github.com/mistakeknot/Remontoire/internal/domain"
 )
@@ -19,6 +20,8 @@ type fakeEngine struct {
 	latest              string
 	serviceCalls        []string
 	stateCalls          []string
+	backlogCalls        []string
+	promotions          []adapters.Bead
 	startMode           domain.Mode
 	err                 error
 	startErr            error
@@ -130,14 +133,62 @@ func (f *fakeEngine) GetLatestCycle(_ context.Context, portfolio string) (string
 	}
 	return f.latest, nil
 }
+func (f *fakeEngine) ReadyPromotions(context.Context) ([]adapters.Bead, error) {
+	f.backlogCalls = append(f.backlogCalls, "ready-promotions")
+	if f.err != nil {
+		return nil, f.err
+	}
+	return append([]adapters.Bead(nil), f.promotions...), nil
+}
 
 func testApplication(t *testing.T, engine *fakeEngine) *Application {
 	t.Helper()
 	cfg := validConfig(t)
 	return &Application{
-		Config: cfg, Service: engine, State: engine,
+		Config: cfg, Service: engine, State: engine, Backlog: engine,
 		Store:    cycle.FileStore{Root: cfg.ArtifactRoot},
 		LookPath: func(binary string) (string, error) { return filepath.Join("/usr/bin", filepath.Base(binary)), nil },
+	}
+}
+
+func TestCLIAttentionReturnsLatestCycleAndReadyPromotionsWithoutServiceCalls(t *testing.T) {
+	engine := &fakeEngine{
+		latest: "cycle-1",
+		current: domain.Cycle{
+			SchemaVersion: domain.CycleSchemaV1,
+			ID:            "cycle-1",
+			Portfolio:     "sylveste",
+			Mode:          domain.ModeProposal,
+			Stage:         domain.StageAwaitingApproval,
+		},
+		promotions: []adapters.Bead{{
+			ID: "Revel-prom", Title: "Land measured cache improvement", Status: "open",
+			Priority: 2, IssueType: "feature", DependentCount: 3,
+			Labels: []string{"remontoire-promotion", "remontoire:cycle:cycle-1"},
+		}},
+	}
+
+	code, output, stderr := runJSON(t, testApplication(t, engine), "attention", "--json")
+	if code != ExitOK || stderr != "" {
+		t.Fatalf("code=%d output=%#v stderr=%q", code, output, stderr)
+	}
+	if output["schema_version"] != "remontoire.attention/v1" {
+		t.Fatalf("schema = %#v", output["schema_version"])
+	}
+	cycleValue, ok := output["cycle"].(map[string]any)
+	if !ok || cycleValue["id"] != "cycle-1" || cycleValue["stage"] != "awaiting_approval" {
+		t.Fatalf("cycle = %#v", output["cycle"])
+	}
+	promotions, ok := output["promotions"].([]any)
+	if !ok || len(promotions) != 1 || promotions[0].(map[string]any)["id"] != "Revel-prom" {
+		t.Fatalf("promotions = %#v", output["promotions"])
+	}
+	if len(engine.serviceCalls) != 0 {
+		t.Fatalf("attention called cycle service: %#v", engine.serviceCalls)
+	}
+	if !reflect.DeepEqual(engine.stateCalls, []string{"latest:sylveste", "get:cycle-1"}) ||
+		!reflect.DeepEqual(engine.backlogCalls, []string{"ready-promotions"}) {
+		t.Fatalf("state=%#v backlog=%#v", engine.stateCalls, engine.backlogCalls)
 	}
 }
 

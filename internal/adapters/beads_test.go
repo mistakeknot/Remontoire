@@ -55,6 +55,24 @@ func TestBeadsListAndFingerprintDedup(t *testing.T) {
 	}
 }
 
+func TestBeadsReadyPromotionsUsesSandboxedBlockerAwareQuery(t *testing.T) {
+	runner := &recordingRunner{}
+	runner.queue(`[{"id":"Revel-prom","title":"Land measured cache improvement","status":"open","priority":2,"issue_type":"feature","labels":["remontoire-promotion","remontoire:cycle:cycle-1"],"dependent_count":3}]`)
+	beads := Beads{Binary: "bd", Dir: "/portfolio", Runner: runner}
+
+	items, err := beads.ReadyPromotions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "Revel-prom" || items[0].DependentCount != 3 {
+		t.Fatalf("promotions = %#v", items)
+	}
+	want := []string{"--sandbox", "ready", "--label=remontoire-promotion", "--limit=0", "--json"}
+	if got := runner.calls[0].Invocation.Args; !reflect.DeepEqual(got, want) {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
 func TestBeadsCreateExperimentIsP4AndCarriesIdempotencyLabel(t *testing.T) {
 	runner := &recordingRunner{}
 	runner.queue("Revel-exp\n")

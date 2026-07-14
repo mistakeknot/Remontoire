@@ -18,6 +18,7 @@ type Bead struct {
 	Status             string   `json:"status"`
 	Priority           int      `json:"priority"`
 	IssueType          string   `json:"issue_type"`
+	DependentCount     int      `json:"dependent_count"`
 	Labels             []string `json:"labels"`
 	Dependencies       []struct {
 		DependsOnID string `json:"depends_on_id"`
@@ -39,6 +40,18 @@ func (b Beads) List(ctx context.Context) ([]Bead, error) {
 	var beads []Bead
 	if err := json.Unmarshal(result.Stdout, &beads); err != nil {
 		return nil, fmt.Errorf("decode beads list: %w", err)
+	}
+	return beads, nil
+}
+
+func (b Beads) ReadyPromotions(ctx context.Context) ([]Bead, error) {
+	result, err := b.run(ctx, "--sandbox", "ready", "--label=remontoire-promotion", "--limit=0", "--json")
+	if err != nil {
+		return nil, err
+	}
+	var beads []Bead
+	if err := json.Unmarshal(result.Stdout, &beads); err != nil {
+		return nil, fmt.Errorf("decode ready promotion beads: %w", err)
 	}
 	return beads, nil
 }

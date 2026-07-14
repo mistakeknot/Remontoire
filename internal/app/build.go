@@ -48,5 +48,5 @@ func New(cfg Config) (*Application, error) {
 		Executors: executors, Reviewers: reviewers, Roadmap: roadmap, Worktrees: worktrees,
 		BenchmarkRunner: runner, Store: store,
 	}
-	return &Application{Config: cfg, Service: service, State: intercore, Store: store, LookPath: exec.LookPath}, nil
+	return &Application{Config: cfg, Service: service, State: intercore, Backlog: beads, Store: store, LookPath: exec.LookPath}, nil
 }

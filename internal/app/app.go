@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/cycle"
 	"github.com/mistakeknot/Remontoire/internal/domain"
 )
@@ -40,10 +41,15 @@ type State interface {
 	GetLatestCycle(context.Context, string) (string, error)
 }
 
+type Backlog interface {
+	ReadyPromotions(context.Context) ([]adapters.Bead, error)
+}
+
 type Application struct {
 	Config   Config
 	Service  Service
 	State    State
+	Backlog  Backlog
 	Store    cycle.FileStore
 	LookPath func(string) (string, error)
 }
@@ -58,6 +64,12 @@ type DoctorCheck struct {
 type DoctorReport struct {
 	Healthy bool          `json:"healthy"`
 	Checks  []DoctorCheck `json:"checks"`
+}
+
+type AttentionView struct {
+	SchemaVersion string          `json:"schema_version"`
+	Cycle         domain.Cycle    `json:"cycle"`
+	Promotions    []adapters.Bead `json:"promotions"`
 }
 
 type usageError struct{ message string }
@@ -77,7 +89,7 @@ func (a *Application) Run(ctx context.Context, args []string, stdout, stderr io.
 		return writeFailure(stderr, jsonMode, fmt.Errorf("application service and state adapters are required"), ExitFailure)
 	}
 	if len(args) == 0 {
-		return writeFailure(stderr, jsonMode, usageError{message: "usage: remontoire <cycle|approve|resume|decline|status|receipt|doctor>"}, ExitUsage)
+		return writeFailure(stderr, jsonMode, usageError{message: "usage: remontoire <cycle|approve|resume|decline|status|attention|receipt|doctor>"}, ExitUsage)
 	}
 
 	var value any
@@ -93,6 +105,8 @@ func (a *Application) Run(ctx context.Context, args []string, stdout, stderr io.
 		value, err = a.runDecline(ctx, args[1:])
 	case "status":
 		value, err = a.runStatus(ctx, args[1:])
+	case "attention":
+		value, err = a.runAttention(ctx, args[1:])
 	case "receipt":
 		value, err = a.runReceipt(args[1:])
 	case "doctor":
@@ -130,6 +144,28 @@ func (a *Application) Run(ctx context.Context, args []string, stdout, stderr io.
 		return writeFailure(stderr, jsonMode, err, ExitFailure)
 	}
 	return ExitOK
+}
+
+func (a *Application) runAttention(ctx context.Context, args []string) (AttentionView, error) {
+	if len(args) != 0 {
+		return AttentionView{}, usageError{message: "usage: remontoire attention [--json]"}
+	}
+	if a.Backlog == nil {
+		return AttentionView{}, fmt.Errorf("attention backlog adapter is required")
+	}
+	cycleValue, err := a.runStatus(ctx, nil)
+	if err != nil {
+		return AttentionView{}, err
+	}
+	promotions, err := a.Backlog.ReadyPromotions(ctx)
+	if err != nil {
+		return AttentionView{}, fmt.Errorf("read ready promotions: %w", err)
+	}
+	return AttentionView{
+		SchemaVersion: "remontoire.attention/v1",
+		Cycle:         cycleValue,
+		Promotions:    promotions,
+	}, nil
 }
 
 func (a *Application) runReceipt(args []string) (any, error) {
