@@ -16,7 +16,7 @@ func New(cfg Config) (*Application, error) {
 	}
 	runner := adapters.ExecRunner{DefaultMaxOutputBytes: 8 << 20}
 	intercore := &adapters.Intercore{Binary: cfg.IntercoreBinary, Dir: cfg.ProjectDir, Runner: runner}
-	beads := &adapters.Beads{Binary: cfg.BeadsBinary, Dir: cfg.ProjectDir, Runner: runner}
+	beads := &adapters.Beads{Binary: cfg.BeadsBinary, Dir: cfg.BacklogDir, Runner: runner}
 	ockham := &adapters.Ockham{Binary: cfg.OckhamBinary, Dir: cfg.ProjectDir, Runner: runner}
 	roadmap := &adapters.Roadmap{
 		BashBinary: cfg.BashBinary, ScriptPath: cfg.RoadmapScriptPath, Dir: cfg.ProjectDir,

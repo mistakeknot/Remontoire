@@ -18,6 +18,7 @@ type Config struct {
 	Version                int         `json:"version"`
 	Portfolio              string      `json:"portfolio"`
 	ProjectDir             string      `json:"project_dir"`
+	BacklogDir             string      `json:"backlog_dir,omitempty"`
 	ArtifactRoot           string      `json:"artifact_root"`
 	WorktreeRoot           string      `json:"worktree_root"`
 	AllowedRepositoryRoots []string    `json:"allowed_repository_roots"`
@@ -80,6 +81,9 @@ func LoadConfig(path string) (Config, error) {
 }
 
 func (c *Config) applyDefaults() {
+	if c.BacklogDir == "" {
+		c.BacklogDir = c.ProjectDir
+	}
 	if c.MaxInputBytes == 0 {
 		c.MaxInputBytes = 1 << 20
 	}
@@ -111,6 +115,9 @@ func (c Config) Validate() error {
 		"project_dir": c.ProjectDir, "artifact_root": c.ArtifactRoot, "worktree_root": c.WorktreeRoot,
 		"judgment_schema_path": c.JudgmentSchemaPath, "execution_schema_path": c.ExecutionSchemaPath,
 		"review_schema_path": c.ReviewSchemaPath, "roadmap_script_path": c.RoadmapScriptPath, "roadmap_path": c.RoadmapPath,
+	}
+	if c.BacklogDir != "" {
+		paths["backlog_dir"] = c.BacklogDir
 	}
 	for name, value := range paths {
 		if !filepath.IsAbs(value) || filepath.Clean(value) != value {

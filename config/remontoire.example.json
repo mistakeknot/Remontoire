@@ -2,6 +2,7 @@
   "version": 1,
   "portfolio": "sylveste",
   "project_dir": "/home/mk/projects",
+  "backlog_dir": "/home/mk/projects/Sylveste",
   "artifact_root": "/home/mk/projects/Sylveste/os/Remontoire/.remontoire",
   "worktree_root": "/home/mk/projects/.worktrees/remontoire",
   "allowed_repository_roots": [
