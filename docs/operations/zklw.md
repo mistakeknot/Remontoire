@@ -27,6 +27,20 @@ The short-lived `0600` prompt handoff is created under the artifact root so it
 remains visible to the host daemon despite the unit's private `/tmp`, then is
 deleted as soon as the invocation returns.
 
+Before enabling this route, configure the pooler's input allowlist to the exact
+Remontoire artifact root:
+
+```bash
+bb pool config set execInputDir /home/mk/.local/state/remontoire
+```
+
+The pooled child belongs to the BB host daemon, not to `remontoire.service`.
+Consequently the service's `ProtectHome`, `PrivateTmp`, sanitized environment,
+and dedicated `CODEX_HOME` do not contain that child; Codex's own `--sandbox`
+and approval policy remain the execution boundary. The rollout canary must also
+confirm that the installed Codex honors the explicit pooled `-c` provider
+settings when `--ignore-user-config` is present.
+
 The proposal unit retains a dedicated writable Codex runtime home for that
 direct fallback and binds only `~/.codex/auth.json` into it. That one file
 remains writable so Codex can persist token refreshes; the rest of `~/.codex`
@@ -68,6 +82,7 @@ Run every check before the first service invocation:
 ```bash
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" doctor --json
 bb pool status --json
+bb pool config
 test -r "$HOME/.codex/auth.json" && test -w "$HOME/.codex/auth.json"
 systemd-analyze verify ~/.config/systemd/user/remontoire.service ~/.config/systemd/user/remontoire.timer
 systemctl --user status remontoire.timer --no-pager

@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
@@ -25,6 +27,7 @@ const (
 	CodexTransportPooled         = "pooled"
 	CodexTransportDirectFallback = "direct-fallback"
 	poolStartMarker              = "bb-pool-exec: transport=pooled provider=codex"
+	poolExecTimeout              = 29 * time.Minute
 )
 
 func (c Codex) Name() string { return "codex" }
@@ -142,11 +145,13 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 		return adapters.Result{}, "", fmt.Errorf("codex pool input: %w", err)
 	}
 	defer os.Remove(stdinPath)
-	poolArgs := []string{"pool", "exec", "--stdin-file", stdinPath, "--", binary}
+	poolArgs := []string{"pool", "exec", "--stdin-file", stdinPath, "--", "codex"}
 	poolArgs = append(poolArgs, args...)
-	result, poolErr := c.Runner.Run(ctx, adapters.Invocation{
+	poolCtx, cancelPool := context.WithTimeout(ctx, poolExecTimeout)
+	result, poolErr := c.Runner.Run(poolCtx, adapters.Invocation{
 		Name: "bb", Args: poolArgs, Env: environment, MaxOutputBytes: 8 << 20,
 	})
+	cancelPool()
 	if poolErr == nil && result.ExitCode == 0 {
 		return result, CodexTransportPooled, nil
 	}
@@ -199,14 +204,14 @@ func poolMayHaveStarted(ctx context.Context, result adapters.Result, err error) 
 	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, adapters.ErrOutputLimit) {
 		return true
 	}
-	stderr := strings.ToLower(string(result.Stderr))
-	if strings.Contains(stderr, poolStartMarker) ||
-		strings.Contains(stderr, "plugin_cli_output_too_large") ||
-		strings.Contains(stderr, "plugin cli output") && strings.Contains(stderr, "large") {
+	output := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr))
+	if strings.Contains(output, poolStartMarker) ||
+		strings.Contains(output, "plugin_cli_output_too_large") ||
+		strings.Contains(output, "plugin cli output") && strings.Contains(output, "large") {
 		return true
 	}
-	var commandErr *adapters.CommandError
-	if errors.As(err, &commandErr) && commandErr.ExitCode < 0 {
+	var execError *exec.Error
+	if errors.As(err, &execError) || errors.Is(err, exec.ErrNotFound) {
 		return false
 	}
 	for _, knownPreStart := range []string{
@@ -217,7 +222,7 @@ func poolMayHaveStarted(ctx context.Context, result adapters.Result, err error) 
 		"econnrefused",
 		"connection refused",
 	} {
-		if strings.Contains(stderr, knownPreStart) {
+		if strings.Contains(output, knownPreStart) {
 			return false
 		}
 	}

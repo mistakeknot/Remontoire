@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
@@ -20,10 +22,13 @@ type fakeRunner struct {
 	responses  []adapters.Result
 	errors     []error
 	poolInputs [][]byte
+	deadlines  []time.Time
 }
 
-func (r *fakeRunner) Run(_ context.Context, invocation adapters.Invocation) (adapters.Result, error) {
+func (r *fakeRunner) Run(ctx context.Context, invocation adapters.Invocation) (adapters.Result, error) {
 	r.calls = append(r.calls, invocation)
+	deadline, _ := ctx.Deadline()
+	r.deadlines = append(r.deadlines, deadline)
 	for index, arg := range invocation.Args {
 		if arg == "--stdin-file" && index+1 < len(invocation.Args) {
 			input, _ := os.ReadFile(invocation.Args[index+1])
@@ -308,6 +313,9 @@ func TestCodexFallsBackDirectlyOnlyWhenPoolFailsBeforeStart(t *testing.T) {
 	if len(runner.calls) != 2 || runner.calls[0].Name != "bb" || runner.calls[1].Name != "/opt/bin/codex" {
 		t.Fatalf("calls = %#v, want pooled attempt then direct fallback", runner.calls)
 	}
+	if got := runner.calls[0].Args[5]; got != "codex" {
+		t.Fatalf("pooled command = %q, want host-resolved codex", got)
+	}
 	if !strings.Contains(string(meta.Stderr), "remontoire-codex: transport=direct-fallback") {
 		t.Fatalf("stderr does not record fallback transport: %s", meta.Stderr)
 	}
@@ -327,6 +335,16 @@ func TestCodexDoesNotRepeatAStartedOrIndeterminatePooledCall(t *testing.T) {
 			err: errors.New("pooled child failed"),
 		},
 		{name: "bounded output indeterminate", result: adapters.Result{ExitCode: 1}, err: adapters.ErrOutputLimit},
+		{
+			name:   "bb client signal death",
+			result: adapters.Result{ExitCode: -1},
+			err:    &adapters.CommandError{Name: "bb", ExitCode: -1, Cause: &exec.ExitError{}},
+		},
+		{
+			name:   "server output limit JSON on stdout",
+			result: adapters.Result{ExitCode: 1, Stdout: []byte(`{"ok":false,"error":{"code":"plugin_cli_output_too_large"}}`)},
+			err:    errors.New("bb exited 1"),
+		},
 		{name: "unknown transport failure", result: adapters.Result{ExitCode: 1}, err: errors.New("connection reset")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -343,6 +361,43 @@ func TestCodexDoesNotRepeatAStartedOrIndeterminatePooledCall(t *testing.T) {
 				t.Fatalf("calls = %d, want no direct replay", len(runner.calls))
 			}
 		})
+	}
+}
+
+func TestCodexFallsBackWhenBBExecutableIsMissingBeforeStart(t *testing.T) {
+	runner := &fakeRunner{
+		responses: []adapters.Result{{ExitCode: -1}, {ExitCode: 0}},
+		errors: []error{
+			&adapters.CommandError{Name: "bb", ExitCode: -1, Cause: &exec.Error{Name: "bb", Err: exec.ErrNotFound}},
+			nil,
+		},
+	}
+	backend := Codex{Binary: "/opt/bin/codex", Runner: runner}
+	_, transport, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport != CodexTransportDirectFallback || len(runner.calls) != 2 {
+		t.Fatalf("transport/calls = %q/%d, want direct fallback after exec.Error", transport, len(runner.calls))
+	}
+}
+
+func TestCodexCapsPooledInvocationBelowServerRPCTimeout(t *testing.T) {
+	runner := &fakeRunner{responses: []adapters.Result{{ExitCode: 0}}}
+	backend := Codex{Binary: "codex", Runner: runner}
+	started := time.Now()
+	if _, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt")); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.deadlines) != 1 || runner.deadlines[0].IsZero() {
+		t.Fatalf("pooled call deadline = %v, want bounded context", runner.deadlines)
+	}
+	want := started.Add(poolExecTimeout)
+	if delta := runner.deadlines[0].Sub(want); delta < -time.Second || delta > time.Second {
+		t.Fatalf("pooled deadline delta = %v, want approximately %v", delta, poolExecTimeout)
+	}
+	if poolExecTimeout >= 30*time.Minute {
+		t.Fatalf("pool timeout = %v, must stay below 30 minute RPC timeout", poolExecTimeout)
 	}
 }
 
