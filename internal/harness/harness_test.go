@@ -193,6 +193,26 @@ func TestSafeEnvironmentRejectsUnusableTempDir(t *testing.T) {
 	}
 }
 
+func TestCodexErrorIncludesJSONEventWhenStderrEmpty(t *testing.T) {
+	runner := &fakeRunner{responses: []adapters.Result{{
+		Stdout:   []byte(`{"type":"error","message":"401 Unauthorized: Missing bearer"}` + "\n"),
+		ExitCode: 1,
+	}}}
+	backend := Codex{Binary: "codex", Runner: runner}
+	_, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
+	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized: Missing bearer") {
+		t.Fatalf("error = %v, want JSON event diagnostic", err)
+	}
+}
+
+func TestCodexErrorDetailRedactsCredential(t *testing.T) {
+	result := adapters.Result{Stdout: []byte(`{"type":"error","message":"auth failed for sk-abcdefghijklmnopqrstuvwxyz123456"}` + "\n")}
+	detail := codexErrorDetail(result)
+	if strings.Contains(detail, "sk-abcdefghijklmnopqrstuvwxyz123456") || !strings.Contains(detail, "[REDACTED]") {
+		t.Fatalf("error detail did not redact credential: %q", detail)
+	}
+}
+
 func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 	dir := t.TempDir()
 	output := filepath.Join(dir, "judgment.json")

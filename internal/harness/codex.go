@@ -164,9 +164,9 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 	}
 	if poolMayHaveStarted(ctx, result, poolErr) {
 		if poolErr != nil {
-			return result, transport, fmt.Errorf("codex pooled backend: %w", poolErr)
+			return result, transport, fmt.Errorf("codex pooled backend: %w%s", poolErr, codexErrorDetail(result))
 		}
-		return result, transport, fmt.Errorf("codex pooled backend exited %d", result.ExitCode)
+		return result, transport, fmt.Errorf("codex pooled backend exited %d%s", result.ExitCode, codexErrorDetail(result))
 	}
 	directArgs := append([]string{}, args...)
 	if len(directArgs) > 0 && directArgs[0] == "exec" {
@@ -177,10 +177,10 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 	})
 	result.Stderr = append([]byte("remontoire-codex: transport=direct-fallback\n"), result.Stderr...)
 	if err != nil {
-		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend: %w", err)
+		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend: %w%s", err, codexErrorDetail(result))
 	}
 	if result.ExitCode != 0 {
-		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend exited %d", result.ExitCode)
+		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend exited %d%s", result.ExitCode, codexErrorDetail(result))
 	}
 	return result, CodexTransportDirectFallback, nil
 }
@@ -239,6 +239,32 @@ func poolMayHaveStarted(ctx context.Context, result adapters.Result, err error) 
 		}
 	}
 	return true
+}
+
+func codexErrorDetail(result adapters.Result) string {
+	scanner := bufio.NewScanner(bytes.NewReader(result.Stdout))
+	scanner.Buffer(make([]byte, 4096), 1<<20)
+	message := ""
+	for scanner.Scan() {
+		var event struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) == nil && event.Type == "error" && event.Message != "" {
+			message = event.Message
+		}
+	}
+	for _, pattern := range sensitiveValue {
+		message = pattern.ReplaceAllString(message, "[REDACTED]")
+	}
+	message = strings.TrimSpace(message)
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	if message == "" {
+		return ""
+	}
+	return "; codex JSON error: " + message
 }
 
 func decodeFile(path string, target any) error {
