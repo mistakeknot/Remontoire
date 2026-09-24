@@ -303,7 +303,7 @@ func (j cancelingJudge) Judge(context.Context, harness.JudgmentRequest) (domain.
 }
 
 func (j dynamicJudge) Judge(_ context.Context, request harness.JudgmentRequest) (domain.Judgment, harness.Metadata, error) {
-	return j.call(request), harness.Metadata{Backend: "fake", Model: "fixture"}, nil
+	return j.call(request), harness.Metadata{Backend: "fake", Model: "fixture", Transport: "pooled"}, nil
 }
 
 func selectedJudgment(t *testing.T, request harness.JudgmentRequest, repository string) domain.Judgment {
@@ -513,6 +513,9 @@ func TestResumeObservationUsesStoredSnapshotWithoutLiveSourceReads(t *testing.T)
 	completed, err := service.Start(context.Background(), domain.ModeShadow)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if completed.JudgmentTransport != "pooled" {
+		t.Fatalf("judgment transport = %q, want pooled", completed.JudgmentTransport)
 	}
 	replayCount := len(kernel.replay)
 	completed.Stage = domain.StageObserving

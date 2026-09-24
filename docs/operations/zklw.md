@@ -18,11 +18,20 @@ changes.
 | User units | `~/.config/systemd/user/remontoire.{service,timer}` |
 
 The config contains paths and backend choices only. Do not add credentials to
-the config or unit. The proposal unit gives Codex a dedicated writable runtime
-home and binds only `~/.codex/auth.json` into it. That one file remains writable
-so Codex can persist token refreshes; the rest of `~/.codex` stays read-only.
-Claude uses the existing `mk` user session during manual approved execution or
-review.
+the config or unit. The Codex harness first uses `bb pool exec` to fetch the
+current machine credential in memory and run on the primary enrolled host. If
+the pool or its host runner is definitely unavailable before Codex starts, the
+harness falls back once to direct Codex. Unknown or post-start failures are not
+replayed. Cycle records identify `pooled` or `direct-fallback` transport.
+The short-lived `0600` prompt handoff is created under the artifact root so it
+remains visible to the host daemon despite the unit's private `/tmp`, then is
+deleted as soon as the invocation returns.
+
+The proposal unit retains a dedicated writable Codex runtime home for that
+direct fallback and binds only `~/.codex/auth.json` into it. That one file
+remains writable so Codex can persist token refreshes; the rest of `~/.codex`
+stays read-only. Claude uses the existing `mk` user session during manual
+approved execution or review.
 
 ## Install Without Activation
 
@@ -58,6 +67,7 @@ Run every check before the first service invocation:
 
 ```bash
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" doctor --json
+bb pool status --json
 test -r "$HOME/.codex/auth.json" && test -w "$HOME/.codex/auth.json"
 systemd-analyze verify ~/.config/systemd/user/remontoire.service ~/.config/systemd/user/remontoire.timer
 systemctl --user status remontoire.timer --no-pager

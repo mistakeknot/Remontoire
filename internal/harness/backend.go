@@ -53,6 +53,7 @@ type ExecutionReport struct {
 type Metadata struct {
 	Backend    string  `json:"backend"`
 	Model      string  `json:"model"`
+	Transport  string  `json:"transport,omitempty"`
 	Turns      int     `json:"turns,omitempty"`
 	CostUSD    float64 `json:"cost_usd,omitempty"`
 	Transcript []byte  `json:"-"`

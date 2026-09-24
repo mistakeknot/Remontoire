@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -14,10 +15,17 @@ import (
 )
 
 type Codex struct {
-	Binary string
-	Model  string
-	Runner adapters.Runner
+	Binary       string
+	Model        string
+	PoolInputDir string
+	Runner       adapters.Runner
 }
+
+const (
+	CodexTransportPooled         = "pooled"
+	CodexTransportDirectFallback = "direct-fallback"
+	poolStartMarker              = "bb-pool-exec: transport=pooled provider=codex"
+)
 
 func (c Codex) Name() string { return "codex" }
 
@@ -32,8 +40,8 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 		"--output-last-message="+request.OutputPath,
 		"--color=never", "--json", "-",
 	)
-	result, err := c.run(ctx, args, []byte(judgmentPrompt(sanitized)))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	result, transport, err := c.run(ctx, args, []byte(judgmentPrompt(sanitized)))
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err
 	}
@@ -63,8 +71,8 @@ func (c Codex) Execute(ctx context.Context, request ExecutionRequest) (Execution
 		"--output-last-message="+request.OutputPath,
 		"--color=never", "--json", "-",
 	)
-	result, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	result, transport, err := c.run(ctx, args, []byte(prompt))
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return ExecutionReport{}, meta, err
 	}
@@ -93,8 +101,8 @@ func (c Codex) Review(ctx context.Context, request ReviewRequest) (domain.Review
 		"--output-last-message="+request.OutputPath,
 		"--color=never", "--json", "-",
 	)
-	result, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	result, transport, err := c.run(ctx, args, []byte(prompt))
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Review{}, meta, err
 	}
@@ -116,9 +124,9 @@ func (c Codex) baseArgs(sandbox, dir string) []string {
 	return args
 }
 
-func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.Result, error) {
+func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.Result, string, error) {
 	if c.Runner == nil {
-		return adapters.Result{}, fmt.Errorf("codex runner is required")
+		return adapters.Result{}, "", fmt.Errorf("codex runner is required")
 	}
 	binary := c.Binary
 	if binary == "" {
@@ -126,19 +134,94 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 	}
 	environment, cleanup, err := safeEnvironment()
 	if err != nil {
-		return adapters.Result{}, fmt.Errorf("codex environment: %w", err)
+		return adapters.Result{}, "", fmt.Errorf("codex environment: %w", err)
 	}
 	defer cleanup()
-	result, err := c.Runner.Run(ctx, adapters.Invocation{
+	stdinPath, err := writePoolInput(c.PoolInputDir, stdin)
+	if err != nil {
+		return adapters.Result{}, "", fmt.Errorf("codex pool input: %w", err)
+	}
+	defer os.Remove(stdinPath)
+	poolArgs := []string{"pool", "exec", "--stdin-file", stdinPath, "--", binary}
+	poolArgs = append(poolArgs, args...)
+	result, poolErr := c.Runner.Run(ctx, adapters.Invocation{
+		Name: "bb", Args: poolArgs, Env: environment, MaxOutputBytes: 8 << 20,
+	})
+	if poolErr == nil && result.ExitCode == 0 {
+		return result, CodexTransportPooled, nil
+	}
+	if poolMayHaveStarted(ctx, result, poolErr) {
+		if poolErr != nil {
+			return result, CodexTransportPooled, fmt.Errorf("codex pooled backend: %w", poolErr)
+		}
+		return result, CodexTransportPooled, fmt.Errorf("codex pooled backend exited %d", result.ExitCode)
+	}
+	result, err = c.Runner.Run(ctx, adapters.Invocation{
 		Name: binary, Args: args, Stdin: stdin, Env: environment, MaxOutputBytes: 8 << 20,
 	})
+	result.Stderr = append([]byte("remontoire-codex: transport=direct-fallback\n"), result.Stderr...)
 	if err != nil {
-		return result, fmt.Errorf("codex backend: %w", err)
+		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend: %w", err)
 	}
 	if result.ExitCode != 0 {
-		return result, fmt.Errorf("codex backend exited %d", result.ExitCode)
+		return result, CodexTransportDirectFallback, fmt.Errorf("codex backend exited %d", result.ExitCode)
 	}
-	return result, nil
+	return result, CodexTransportDirectFallback, nil
+}
+
+func writePoolInput(dir string, stdin []byte) (string, error) {
+	file, err := os.CreateTemp(dir, ".remontoire-codex-input-")
+	if err != nil {
+		return "", err
+	}
+	path := file.Name()
+	ok := false
+	defer func() {
+		_ = file.Close()
+		if !ok {
+			_ = os.Remove(path)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		return "", err
+	}
+	if _, err := file.Write(stdin); err != nil {
+		return "", err
+	}
+	if err := file.Close(); err != nil {
+		return "", err
+	}
+	ok = true
+	return path, nil
+}
+
+func poolMayHaveStarted(ctx context.Context, result adapters.Result, err error) bool {
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, adapters.ErrOutputLimit) {
+		return true
+	}
+	stderr := strings.ToLower(string(result.Stderr))
+	if strings.Contains(stderr, poolStartMarker) ||
+		strings.Contains(stderr, "plugin_cli_output_too_large") ||
+		strings.Contains(stderr, "plugin cli output") && strings.Contains(stderr, "large") {
+		return true
+	}
+	var commandErr *adapters.CommandError
+	if errors.As(err, &commandErr) && commandErr.ExitCode < 0 {
+		return false
+	}
+	for _, knownPreStart := range []string{
+		"account pooler cannot currently serve codex",
+		"account pooler could not reach its command runner",
+		"no primary enrolled host",
+		"unknown command 'pool'",
+		"econnrefused",
+		"connection refused",
+	} {
+		if strings.Contains(stderr, knownPreStart) {
+			return false
+		}
+	}
+	return true
 }
 
 func decodeFile(path string, target any) error {

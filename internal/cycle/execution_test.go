@@ -79,7 +79,7 @@ func executionService(t *testing.T) (*Service, *fakeKernel, *fakeBacklog, *fakeE
 			Commands:      []string{"go test ./internal/roadmap"},
 			Completed:     true,
 		},
-		meta: harness.Metadata{Backend: "codex", Model: "fixture", Transcript: []byte("transcript\n")},
+		meta: harness.Metadata{Backend: "codex", Model: "fixture", Transport: "direct-fallback", Transcript: []byte("transcript\n")},
 	}
 	worktrees := &fakeWorktrees{
 		info:  adapters.WorktreeInfo{Path: worktreePath, BaseCommit: strings.Repeat("a", 40)},
@@ -198,6 +198,9 @@ func TestApprovedExecutionRunsOnceMeasuresAndAdvancesToReview(t *testing.T) {
 	}
 	if executed.Stage != domain.StageReviewing || executed.Execution == nil || executed.Measurement == nil {
 		t.Fatalf("executed cycle = %#v", executed)
+	}
+	if executed.Execution.Transport != "direct-fallback" {
+		t.Fatalf("execution transport = %q, want direct-fallback", executed.Execution.Transport)
 	}
 	if executor.calls != 1 || worktrees.prepare != 1 || benchmark.calls != 1 {
 		t.Fatalf("calls executor=%d worktree=%d benchmark=%d", executor.calls, worktrees.prepare, benchmark.calls)

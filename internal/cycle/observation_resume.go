@@ -87,7 +87,8 @@ func (s *Service) continueObservation(ctx context.Context, cycle *domain.Cycle) 
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
 	}
-	judgment, judgmentArtifact, err := s.loadOrRunJudgment(ctx, *cycle, observation, observationJSON)
+	judgment, judgmentArtifact, judgmentTransport, err := s.loadOrRunJudgment(ctx, *cycle, observation, observationJSON)
+	cycle.JudgmentTransport = judgmentTransport
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
 	}
@@ -276,65 +277,68 @@ func (s *Service) validateStoredObservation(cycle domain.Cycle, observation Obse
 	return nil
 }
 
-func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, observation Observation, observationJSON []byte) (domain.Judgment, domain.Artifact, error) {
+func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, observation Observation, observationJSON []byte) (domain.Judgment, domain.Artifact, string, error) {
 	path, err := s.Store.Path(cycle.ID, "judgment.json")
 	if err != nil {
-		return domain.Judgment{}, domain.Artifact{}, err
+		return domain.Judgment{}, domain.Artifact{}, "", err
 	}
 	var judgment domain.Judgment
+	transport := cycle.JudgmentTransport
 	loadedFromDisk := false
 	if data, readErr := os.ReadFile(path); readErr == nil {
 		loadedFromDisk = true
 		if err := json.Unmarshal(data, &judgment); err != nil {
-			return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("decode stored judgment: %w", err)
+			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("decode stored judgment: %w", err)
 		}
 	} else if os.IsNotExist(readErr) {
 		if cycle.Judgment != nil || hasArtifactKind(cycle.Artifacts, "judgment") {
-			return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("canonical judgment artifact is missing")
+			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("canonical judgment artifact is missing")
 		}
-		judgment, _, err = s.Judge.Judge(ctx, harness.JudgmentRequest{
+		var metadata harness.Metadata
+		judgment, metadata, err = s.Judge.Judge(ctx, harness.JudgmentRequest{
 			WorkingDir: s.Config.ProjectDir, SchemaPath: s.Config.JudgmentSchemaPath,
 			OutputPath: path, Observation: observationJSON, MaxInputBytes: s.Config.MaxInputBytes,
 		})
+		transport = metadata.Transport
 		if err != nil {
-			return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("portfolio judgment: %w", err)
+			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 		}
 	} else {
-		return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("read stored judgment: %w", readErr)
+		return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("read stored judgment: %w", readErr)
 	}
 	if loadedFromDisk {
 		current, err := s.Store.HashExisting("judgment", path)
 		if err != nil {
-			return domain.Judgment{}, domain.Artifact{}, err
+			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 		if err := ensureCanonicalArtifactBinding(cycle, current); err != nil {
-			return domain.Judgment{}, domain.Artifact{}, err
+			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 	}
 	if err := domain.ValidateJudgment(judgment); err != nil {
-		return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("portfolio judgment: %w", err)
+		return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 	}
 	if err := validateEvidenceBindings(judgment, observation); err != nil {
-		return domain.Judgment{}, domain.Artifact{}, err
+		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	if err := validateSelectedRanking(judgment); err != nil {
-		return domain.Judgment{}, domain.Artifact{}, err
+		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	if cycle.Judgment != nil {
 		left, _ := json.Marshal(*cycle.Judgment)
 		right, _ := json.Marshal(judgment)
 		if string(left) != string(right) {
-			return domain.Judgment{}, domain.Artifact{}, fmt.Errorf("canonical judgment does not match stored judgment")
+			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("canonical judgment does not match stored judgment")
 		}
 	}
 	artifact, err := s.Store.WriteJSON(cycle.ID, "judgment", "judgment.json", judgment)
 	if err != nil {
-		return domain.Judgment{}, domain.Artifact{}, err
+		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	if err := ensureCanonicalArtifactBinding(cycle, artifact); err != nil {
-		return domain.Judgment{}, domain.Artifact{}, err
+		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
-	return judgment, artifact, nil
+	return judgment, artifact, transport, nil
 }
 
 func hasArtifactKind(artifacts []domain.Artifact, kind string) bool {
