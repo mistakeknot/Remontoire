@@ -37,6 +37,9 @@ func (r *fakeRunner) Run(ctx context.Context, invocation adapters.Invocation) (a
 		}
 	}
 	if len(r.responses) == 0 {
+		if invocation.Name == "bb" {
+			return adapters.Result{Stderr: []byte(poolStartMarker + "\n")}, nil
+		}
 		return adapters.Result{}, nil
 	}
 	result := r.responses[0]
@@ -269,8 +272,6 @@ func TestCodexExecuteIsWorkspaceBoundAndDisablesToolNetwork(t *testing.T) {
 	want := append([]string{"pool", "exec", "--stdin-file", stdinPath, "--", "codex"}, []string{
 		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
 		"--sandbox=workspace-write", "--cd=/worktree", "--model=gpt-5.4",
-		"--config", `sandbox_workspace_write.network_access=false`,
-		"--config", `approval_policy="never"`,
 		"--output-schema=/schemas/execution.json", "--output-last-message=" + output,
 		"--color=never", "--json", "-",
 	}...)
@@ -346,6 +347,11 @@ func TestCodexDoesNotRepeatAStartedOrIndeterminatePooledCall(t *testing.T) {
 			err:    errors.New("bb exited 1"),
 		},
 		{name: "unknown transport failure", result: adapters.Result{ExitCode: 1}, err: errors.New("connection reset")},
+		{
+			name:   "unconfirmed dispatch before a connection-refused detail",
+			result: adapters.Result{ExitCode: 1, Stderr: []byte("bb-pool-exec: transport=pool-unconfirmed provider=codex\nconnection refused after dispatch\n")},
+			err:    errors.New("lost contact"),
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{responses: []adapters.Result{test.result}, errors: []error{test.err}}
@@ -383,7 +389,7 @@ func TestCodexFallsBackWhenBBExecutableIsMissingBeforeStart(t *testing.T) {
 }
 
 func TestCodexCapsPooledInvocationBelowServerRPCTimeout(t *testing.T) {
-	runner := &fakeRunner{responses: []adapters.Result{{ExitCode: 0}}}
+	runner := &fakeRunner{}
 	backend := Codex{Binary: "codex", Runner: runner}
 	started := time.Now()
 	if _, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt")); err != nil {
@@ -398,6 +404,51 @@ func TestCodexCapsPooledInvocationBelowServerRPCTimeout(t *testing.T) {
 	}
 	if poolExecTimeout >= 30*time.Minute {
 		t.Fatalf("pool timeout = %v, must stay below 30 minute RPC timeout", poolExecTimeout)
+	}
+}
+
+func TestCodexRequiresProviderPinConfirmation(t *testing.T) {
+	for _, result := range []adapters.Result{
+		{ExitCode: 0},
+		{ExitCode: 1, Stderr: []byte("bb-pool-exec: transport=pool-unconfirmed provider=codex\nAccount Pooler lost contact; the command may have started.\n")},
+	} {
+		runner := &fakeRunner{responses: []adapters.Result{result}}
+		_, transport, err := (Codex{Runner: runner}).run(context.Background(), []string{"exec"}, []byte("prompt"))
+		if err == nil || transport != "pool-unconfirmed" || len(runner.calls) != 1 {
+			t.Fatalf("unconfirmed execution: transport=%q err=%v calls=%d", transport, err, len(runner.calls))
+		}
+	}
+}
+
+func TestCodexDirectFallbackRetainsExecutionRestrictions(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "execution.json")
+	if err := os.WriteFile(output, []byte(executionReportJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{
+		{ExitCode: 1, Stderr: []byte("Account Pooler cannot currently serve codex\n")},
+		{ExitCode: 0},
+	}}
+	_, meta, err := (Codex{Runner: runner, PoolInputDir: dir}).Execute(context.Background(), ExecutionRequest{
+		Worktree: "/worktree", SchemaPath: "/schema", OutputPath: output, Contract: harnessContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 2 || meta.Transport != "direct-fallback" {
+		t.Fatalf("calls/meta = %#v/%#v", runner.calls, meta)
+	}
+	for _, arg := range runner.calls[0].Args {
+		if strings.HasPrefix(arg, "-c") || strings.HasPrefix(arg, "--config") {
+			t.Fatalf("pooled caller config: %q", arg)
+		}
+	}
+	direct := strings.Join(runner.calls[1].Args, " ")
+	for _, setting := range []string{`--config sandbox_workspace_write.network_access=false`, `--config approval_policy="never"`} {
+		if !strings.Contains(direct, setting) {
+			t.Fatalf("direct policy missing %q: %s", setting, direct)
+		}
 	}
 }
 

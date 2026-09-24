@@ -22,17 +22,26 @@ the config or unit. The Codex harness first uses `bb pool exec` to fetch the
 current machine credential in memory and run on the primary enrolled host. If
 the pool or its host runner is definitely unavailable before Codex starts, the
 harness falls back once to direct Codex. Unknown or post-start failures are not
-replayed. Cycle records identify `pooled` or `direct-fallback` transport.
+replayed. Cycle records identify `pooled`, `pool-unconfirmed` (no confirmed
+provider pin), or `direct-fallback` transport. Even a zero exit without the
+pooler's provider-pin marker is unconfirmed and is not replayed.
 The short-lived `0600` prompt handoff is created under the artifact root so it
 remains visible to the host daemon despite the unit's private `/tmp`, then is
 deleted as soon as the invocation returns.
 
-Before enabling this route, configure the pooler's input allowlist to the exact
-Remontoire artifact root:
+Before enabling this route, the coordinator must set the static
+`BB_ACCOUNT_POOL_EXEC_INPUT_DIR` startup environment variable on the BB server
+to the exact Remontoire artifact root, for example:
 
 ```bash
-bb pool config set execInputDir /home/mk/.local/state/remontoire
+BB_ACCOUNT_POOL_EXEC_INPUT_DIR=/home/mk/.local/state/remontoire
 ```
+
+This is not a `bb pool config` key; CLI and settings RPC cannot change it.
+Changing the server environment and activating it require separate operator
+approval. No such change is made by this branch. The Linux host reads only
+regular, non-symlink direct children through checked `O_NOFOLLOW` descriptors.
+It refuses root, home, and ancestors of its configured or default `CODEX_HOME`.
 
 The pooled child belongs to the BB host daemon, not to `remontoire.service`.
 Consequently the service's `ProtectHome`, `PrivateTmp`, sanitized environment,
@@ -40,6 +49,11 @@ and dedicated `CODEX_HOME` do not contain that child; Codex's own `--sandbox`
 and approval policy remain the execution boundary. The rollout canary must also
 confirm that the installed Codex honors the explicit pooled `-c` provider
 settings when `--ignore-user-config` is present.
+Pooled calls contain no caller `-c`/`--config`: the host owns the provider pin,
+`approval_policy="never"`, and `sandbox_workspace_write.network_access=false`
+inside `exec`. The direct fallback retains those last two execution restrictions
+as direct-only arguments. The pooler's narrow argument allowlist rejects
+profiles, alternate providers, and arbitrary configuration.
 
 The proposal unit retains a dedicated writable Codex runtime home for that
 direct fallback and binds only `~/.codex/auth.json` into it. That one file

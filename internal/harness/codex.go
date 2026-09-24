@@ -24,10 +24,12 @@ type Codex struct {
 }
 
 const (
-	CodexTransportPooled         = "pooled"
-	CodexTransportDirectFallback = "direct-fallback"
-	poolStartMarker              = "bb-pool-exec: transport=pooled provider=codex"
-	poolExecTimeout              = 29 * time.Minute
+	CodexTransportPooled          = "pooled"
+	CodexTransportPoolUnconfirmed = "pool-unconfirmed"
+	CodexTransportDirectFallback  = "direct-fallback"
+	poolStartMarker               = "bb-pool-exec: transport=pooled provider=codex"
+	poolUnconfirmedMarker         = "bb-pool-exec: transport=pool-unconfirmed provider=codex"
+	poolExecTimeout               = 29 * time.Minute
 )
 
 func (c Codex) Name() string { return "codex" }
@@ -68,8 +70,6 @@ func (c Codex) Execute(ctx context.Context, request ExecutionRequest) (Execution
 	}
 	args := c.baseArgs("workspace-write", request.Worktree)
 	args = append(args,
-		"--config", "sandbox_workspace_write.network_access=false",
-		"--config", `approval_policy="never"`,
 		"--output-schema="+request.SchemaPath,
 		"--output-last-message="+request.OutputPath,
 		"--color=never", "--json", "-",
@@ -152,17 +152,28 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 		Name: "bb", Args: poolArgs, Env: environment, MaxOutputBytes: 8 << 20,
 	})
 	cancelPool()
+	transport := CodexTransportPoolUnconfirmed
+	if bytes.HasPrefix(result.Stderr, []byte(poolStartMarker+"\n")) {
+		transport = CodexTransportPooled
+	}
 	if poolErr == nil && result.ExitCode == 0 {
-		return result, CodexTransportPooled, nil
+		if transport != CodexTransportPooled {
+			return result, transport, fmt.Errorf("codex pool did not confirm its provider pin; command will not be replayed")
+		}
+		return result, transport, nil
 	}
 	if poolMayHaveStarted(ctx, result, poolErr) {
 		if poolErr != nil {
-			return result, CodexTransportPooled, fmt.Errorf("codex pooled backend: %w", poolErr)
+			return result, transport, fmt.Errorf("codex pooled backend: %w", poolErr)
 		}
-		return result, CodexTransportPooled, fmt.Errorf("codex pooled backend exited %d", result.ExitCode)
+		return result, transport, fmt.Errorf("codex pooled backend exited %d", result.ExitCode)
+	}
+	directArgs := append([]string{}, args...)
+	if len(directArgs) > 0 && directArgs[0] == "exec" {
+		directArgs = append([]string{"exec", "--config", "sandbox_workspace_write.network_access=false", "--config", `approval_policy="never"`}, directArgs[1:]...)
 	}
 	result, err = c.Runner.Run(ctx, adapters.Invocation{
-		Name: binary, Args: args, Stdin: stdin, Env: environment, MaxOutputBytes: 8 << 20,
+		Name: binary, Args: directArgs, Stdin: stdin, Env: environment, MaxOutputBytes: 8 << 20,
 	})
 	result.Stderr = append([]byte("remontoire-codex: transport=direct-fallback\n"), result.Stderr...)
 	if err != nil {
@@ -206,6 +217,7 @@ func poolMayHaveStarted(ctx context.Context, result adapters.Result, err error) 
 	}
 	output := strings.ToLower(string(result.Stdout) + "\n" + string(result.Stderr))
 	if strings.Contains(output, poolStartMarker) ||
+		strings.Contains(output, poolUnconfirmedMarker) ||
 		strings.Contains(output, "plugin_cli_output_too_large") ||
 		strings.Contains(output, "plugin cli output") && strings.Contains(output, "large") {
 		return true
