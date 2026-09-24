@@ -23,7 +23,7 @@ func New(cfg Config) (*Application, error) {
 		OutputPath: cfg.RoadmapPath, Runner: runner,
 	}
 	worktrees := &adapters.GitWorktrees{GitBinary: cfg.GitBinary, Root: cfg.WorktreeRoot, Runner: runner}
-	codex := &harness.Codex{Binary: cfg.CodexBinary, Model: cfg.CodexModel, PoolInputDir: cfg.ArtifactRoot, Runner: runner}
+	codex := &harness.Codex{Binary: cfg.CodexBinary, Model: cfg.CodexModel, Runner: runner}
 	claude := &harness.Claude{Binary: cfg.ClaudeBinary, Model: cfg.ClaudeModel, Runner: runner}
 	executors := map[string]cycle.Executor{"codex": codex, "claude": claude}
 	reviewers := map[string]cycle.Reviewer{"codex": codex, "claude": claude}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -186,6 +187,16 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 }
 
 func writePoolInput(dir string, stdin []byte) (string, error) {
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, ".local", "state", "bb-account-pool", "exec-input")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
 	file, err := os.CreateTemp(dir, ".remontoire-codex-input-")
 	if err != nil {
 		return "", err

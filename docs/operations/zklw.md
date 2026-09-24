@@ -25,23 +25,44 @@ harness falls back once to direct Codex. Unknown or post-start failures are not
 replayed. Cycle records identify `pooled`, `pool-unconfirmed` (no confirmed
 provider pin), or `direct-fallback` transport. Even a zero exit without the
 pooler's provider-pin marker is unconfirmed and is not replayed.
-The short-lived `0600` prompt handoff is created under the artifact root so it
-remains visible to the host daemon despite the unit's private `/tmp`, then is
-deleted as soon as the invocation returns.
+The short-lived `0600` prompt handoff uses the same fixed default as the host:
+`$HOME/.local/state/bb-account-pool/exec-input`. It stays visible despite the
+unit's private `/tmp` and is deleted when the invocation returns. Remontoire and
+the enrolled host must run as the same user. A 414 KiB prompt travels by file,
+never as one argv string (Linux limits each string to about 128 KiB).
 
-Before enabling this route, the coordinator must set the static
-`BB_ACCOUNT_POOL_EXEC_INPUT_DIR` startup environment variable on the BB server
-to the exact Remontoire artifact root, for example:
+The pool host creates the default directory with mode `0700` when missing and
+checks its effective owner and exact permissions before opening a prompt.
+The default works after plugin reload without changing BB's startup environment.
+An existing `BB_ACCOUNT_POOL_EXEC_INPUT_DIR` server-startup override wins; it
+must match the caller's input directory. CLI, settings RPC and KV cannot change
+this operator-owned path.
 
-```bash
-BB_ACCOUNT_POOL_EXEC_INPUT_DIR=/home/mk/.local/state/remontoire
+The effective zklw unit has `ProtectHome=read-only`, `ProtectSystem=strict` and
+`PrivateTmp=yes`. Its current writable paths do not include the input directory.
+Before the next separately approved service activation, the coordinator must
+pre-create `/home/mk/.local/state/bb-account-pool/exec-input` owned by `mk`, mode
+`0700`, and add this line without clearing existing `ReadWritePaths` entries:
+
+```ini
+[Service]
+ReadWritePaths=/home/mk/.local/state/bb-account-pool/exec-input
 ```
 
-This is not a `bb pool config` key; CLI and settings RPC cannot change it.
-Changing the server environment and activating it require separate operator
-approval. No such change is made by this branch. The Linux host reads only
+The path must exist before service start; a missing-path `-` prefix would not
+grant access later. No unit, live directory or service activation is changed by
+this branch. This narrow writable exception preserves home protection and
+private temporary files; see [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#ReadWritePaths=).
+The Linux host reads only
 regular, non-symlink direct children through checked `O_NOFOLLOW` descriptors.
-It refuses root, home, and ancestors of its configured or default `CODEX_HOME`.
+It refuses root, home, its configured/default Codex homes, their ancestors and
+their descendants. It does not repair unsafe ownership or permissions.
+
+Streaming through the CLI request body would avoid the prompt file but requires
+core CLI/transport changes, payload-limit and cancellation handling beyond a
+plugin-only reload. The default directory reuses the existing 8 MiB bounded
+file/host RPC contract and needs only the writable-path exception above. No
+pooled bearer is stored in the prompt file.
 
 The pooled child belongs to the BB host daemon, not to `remontoire.service`.
 Consequently the service's `ProtectHome`, `PrivateTmp`, sanitized environment,

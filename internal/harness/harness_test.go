@@ -198,10 +198,56 @@ func TestCodexErrorIncludesJSONEventWhenStderrEmpty(t *testing.T) {
 		Stdout:   []byte(`{"type":"error","message":"401 Unauthorized: Missing bearer"}` + "\n"),
 		ExitCode: 1,
 	}}}
-	backend := Codex{Binary: "codex", Runner: runner}
+	backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
 	_, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
 	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized: Missing bearer") {
 		t.Fatalf("error = %v, want JSON event diagnostic", err)
+	}
+}
+
+func TestCodexDefaultInputDirectorySharesLargePromptOutsidePrivateTmp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := filepath.Join(home, ".local", "state", "bb-account-pool", "exec-input")
+	prompt := bytes.Repeat([]byte("p"), 414*1024)
+	runner := &fakeRunner{}
+	_, transport, err := (Codex{Runner: runner}).run(context.Background(), []string{"exec", "-"}, prompt)
+	if err != nil || transport != CodexTransportPooled {
+		t.Fatalf("transport=%q err=%v", transport, err)
+	}
+	input := runner.calls[0].Args[3]
+	if filepath.Dir(input) != dir || !bytes.Equal(runner.poolInputs[0], prompt) {
+		t.Fatal("large prompt did not use the shared daemon input directory")
+	}
+	stat, err := os.Stat(dir)
+	if err != nil || stat.Mode().Perm() != 0o700 {
+		t.Fatalf("input directory permissions: %v, %v", stat, err)
+	}
+	if _, err := os.Stat(input); !os.IsNotExist(err) {
+		t.Fatalf("prompt not removed: %v", err)
+	}
+	for _, arg := range runner.calls[0].Args {
+		if len(arg) >= 128*1024 {
+			t.Fatal("prompt leaked into argv")
+		}
+	}
+}
+
+func TestPoolInputFileIsPrivateAndMatchesDefaultDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	input, err := writePoolInput("", []byte("prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(input) })
+	if filepath.Dir(input) != filepath.Join(home, ".local", "state", "bb-account-pool", "exec-input") {
+		t.Fatalf("unexpected input directory: %q", input)
+	}
+	stat, err := os.Stat(input)
+	if err != nil || stat.Mode().Perm() != 0o600 {
+		t.Fatalf("input file permissions: %v, %v", stat, err)
 	}
 }
 
@@ -319,7 +365,7 @@ func TestCodexFallsBackDirectlyOnlyWhenPoolFailsBeforeStart(t *testing.T) {
 		},
 		errors: []error{errors.New("bb pool unavailable"), nil},
 	}
-	backend := Codex{Binary: "/opt/bin/codex", Model: "gpt-5.4", Runner: runner}
+	backend := Codex{Binary: "/opt/bin/codex", Model: "gpt-5.4", PoolInputDir: t.TempDir(), Runner: runner}
 
 	_, meta, err := backend.Judge(context.Background(), JudgmentRequest{
 		WorkingDir: "/repo", SchemaPath: "/schemas/judgment.json", OutputPath: output,
@@ -375,7 +421,7 @@ func TestCodexDoesNotRepeatAStartedOrIndeterminatePooledCall(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{responses: []adapters.Result{test.result}, errors: []error{test.err}}
-			backend := Codex{Binary: "codex", Runner: runner}
+			backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
 			_, _, err := backend.Judge(context.Background(), JudgmentRequest{
 				WorkingDir: "/repo", SchemaPath: "/schema", OutputPath: filepath.Join(t.TempDir(), "missing.json"),
 				Observation: []byte(`{"beads":[]}`), MaxInputBytes: 4096,
@@ -398,7 +444,7 @@ func TestCodexFallsBackWhenBBExecutableIsMissingBeforeStart(t *testing.T) {
 			nil,
 		},
 	}
-	backend := Codex{Binary: "/opt/bin/codex", Runner: runner}
+	backend := Codex{Binary: "/opt/bin/codex", PoolInputDir: t.TempDir(), Runner: runner}
 	_, transport, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
 	if err != nil {
 		t.Fatal(err)
@@ -410,7 +456,7 @@ func TestCodexFallsBackWhenBBExecutableIsMissingBeforeStart(t *testing.T) {
 
 func TestCodexCapsPooledInvocationBelowServerRPCTimeout(t *testing.T) {
 	runner := &fakeRunner{}
-	backend := Codex{Binary: "codex", Runner: runner}
+	backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
 	started := time.Now()
 	if _, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt")); err != nil {
 		t.Fatal(err)
@@ -433,7 +479,7 @@ func TestCodexRequiresProviderPinConfirmation(t *testing.T) {
 		{ExitCode: 1, Stderr: []byte("bb-pool-exec: transport=pool-unconfirmed provider=codex\nAccount Pooler lost contact; the command may have started.\n")},
 	} {
 		runner := &fakeRunner{responses: []adapters.Result{result}}
-		_, transport, err := (Codex{Runner: runner}).run(context.Background(), []string{"exec"}, []byte("prompt"))
+		_, transport, err := (Codex{PoolInputDir: t.TempDir(), Runner: runner}).run(context.Background(), []string{"exec"}, []byte("prompt"))
 		if err == nil || transport != "pool-unconfirmed" || len(runner.calls) != 1 {
 			t.Fatalf("unconfirmed execution: transport=%q err=%v calls=%d", transport, err, len(runner.calls))
 		}
