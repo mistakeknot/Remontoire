@@ -12,13 +12,15 @@ import (
 const ExecutionSchemaV1 = "remontoire.execution/v1"
 
 type JudgmentRequest struct {
-	WorkingDir    string
-	SchemaPath    string
-	SchemaJSON    []byte
-	OutputPath    string
-	Observation   []byte
-	MaxInputBytes int
-	MaxBudgetUSD  float64
+	WorkingDir       string
+	SchemaPath       string
+	SchemaJSON       []byte
+	OutputPath       string
+	Observation      []byte
+	MaxInputBytes    int
+	MaxBudgetUSD     float64
+	RepositoryPaths  []string
+	RejectionReasons []domain.JudgmentRejection
 }
 
 type ExecutionRequest struct {

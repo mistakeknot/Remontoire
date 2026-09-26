@@ -523,14 +523,16 @@ func TestResumeObservationUsesStoredSnapshotWithoutLiveSourceReads(t *testing.T)
 	completed.Candidate = nil
 	completed.CandidateHash = ""
 	completed.ContractHash = ""
+	completed.JudgmentAttempts = nil // Simulate interruption before any judgment invocation.
 	kept := completed.Artifacts[:0]
 	for _, artifact := range completed.Artifacts {
-		if artifact.Kind != "judgment" {
+		if artifact.Kind != "judgment" && artifact.Kind != "judgment-attempt-1" {
 			kept = append(kept, artifact)
 		}
 	}
 	completed.Artifacts = kept
 	delete(completed.IdempotencyKeys, "run:rank")
+	delete(completed.IdempotencyKeys, "judgment:attempt1")
 	delete(completed.IdempotencyKeys, "event:no_op")
 	delete(completed.IdempotencyKeys, "event:completed")
 	judgmentPath, err := service.Store.Path(completed.ID, "judgment.json")
@@ -538,6 +540,13 @@ func TestResumeObservationUsesStoredSnapshotWithoutLiveSourceReads(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := os.Remove(judgmentPath); err != nil {
+		t.Fatal(err)
+	}
+	attemptPath, err := service.Store.Path(completed.ID, "judgment-attempt-1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(attemptPath); err != nil {
 		t.Fatal(err)
 	}
 	kernel.cycles[completed.ID] = completed

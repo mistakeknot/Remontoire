@@ -40,13 +40,17 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 	if err != nil {
 		return domain.Judgment{}, Metadata{}, err
 	}
+	prompt, err := boundedJudgmentPrompt(request, sanitized)
+	if err != nil {
+		return domain.Judgment{}, Metadata{}, err
+	}
 	args := c.baseArgs("read-only", request.WorkingDir)
 	args = append(args,
 		"--output-schema="+request.SchemaPath,
 		"--output-last-message="+request.OutputPath,
 		"--color=never", "--json", "-",
 	)
-	result, transport, err := c.run(ctx, args, []byte(judgmentPrompt(sanitized)))
+	result, transport, err := c.run(ctx, args, []byte(prompt))
 	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err

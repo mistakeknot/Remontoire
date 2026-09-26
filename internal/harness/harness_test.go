@@ -25,6 +25,41 @@ type fakeRunner struct {
 	deadlines  []time.Time
 }
 
+func TestJudgmentPromptIncludesExactRepositoryListAndCorrection(t *testing.T) {
+	prompt := judgmentPrompt([]byte(`{"beads":[]}`), []string{"/home/mk/projects/shadow-work"}, []domain.JudgmentRejection{{Index: 0, Reason: "metric target must be below baseline when minimizing"}})
+	for _, required := range []string{"/home/mk/projects/shadow-work", "absolute path copied exactly", "baseline 120000 ms", "target such as 60000 ms", "Corrective retry", "metric target must be below baseline when minimizing"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q", required)
+		}
+	}
+	if !strings.Contains(prompt, "UNTRUSTED REJECTION DATA") {
+		t.Fatal("retry reasons are outside the untrusted boundary")
+	}
+}
+
+func TestJudgmentPromptRejectsOversizedRepositoryListAndReason(t *testing.T) {
+	request := JudgmentRequest{MaxInputBytes: 4096, RepositoryPaths: []string{strings.Repeat("/repo", 30000)}}
+	if _, err := boundedJudgmentPrompt(request, []byte(`{}`)); err == nil {
+		t.Fatal("oversized repository list was accepted")
+	}
+	request.RepositoryPaths = nil
+	request.RejectionReasons = []domain.JudgmentRejection{{Reason: strings.Repeat("x", 200000)}}
+	if _, err := boundedJudgmentPrompt(request, []byte(`{}`)); err == nil {
+		t.Fatal("oversized rejection reason was accepted")
+	}
+}
+
+func TestJudgmentPromptPreservesObservationBudget(t *testing.T) {
+	const limit = 4096
+	observation := []byte(`{"x":"` + strings.Repeat("a", limit-len(`{"x":""}`)-1) + `"}`)
+	if len(observation) != limit-1 {
+		t.Fatalf("fixture length=%d", len(observation))
+	}
+	if _, err := boundedJudgmentPrompt(JudgmentRequest{MaxInputBytes: limit}, observation); err != nil {
+		t.Fatalf("near-limit observation rejected: %v", err)
+	}
+}
+
 func (r *fakeRunner) Run(ctx context.Context, invocation adapters.Invocation) (adapters.Result, error) {
 	r.calls = append(r.calls, invocation)
 	deadline, _ := ctx.Deadline()

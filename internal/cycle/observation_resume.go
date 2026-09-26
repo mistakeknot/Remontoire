@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/mistakeknot/Remontoire/internal/domain"
@@ -14,6 +15,9 @@ import (
 )
 
 var ErrObservationIndeterminate = errors.New("observation capture is indeterminate and will not be repeated")
+var ErrJudgmentIndeterminate = errors.New("judgment attempt is indeterminate and will not be repeated")
+var ErrNoValidOpportunities = errors.New("no valid opportunities remain")
+var ErrRepositoryCatalog = errors.New("configured repository catalog unavailable")
 
 func (s *Service) ResumeObservation(ctx context.Context, cycleID string) (cycle domain.Cycle, err error) {
 	if err := s.validate(); err != nil {
@@ -87,7 +91,7 @@ func (s *Service) continueObservation(ctx context.Context, cycle *domain.Cycle) 
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
 	}
-	judgment, judgmentArtifact, judgmentTransport, err := s.loadOrRunJudgment(ctx, *cycle, observation, observationJSON, &cycle.JudgmentRejections)
+	judgment, judgmentArtifact, judgmentTransport, err := s.loadOrRunJudgment(ctx, cycle, observation, observationJSON)
 	cycle.JudgmentTransport = judgmentTransport
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
@@ -277,7 +281,7 @@ func (s *Service) validateStoredObservation(cycle domain.Cycle, observation Obse
 	return nil
 }
 
-func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, observation Observation, observationJSON []byte, rejections *[]domain.JudgmentRejection) (domain.Judgment, domain.Artifact, string, error) {
+func (s *Service) loadOrRunJudgment(ctx context.Context, cycle *domain.Cycle, observation Observation, observationJSON []byte) (domain.Judgment, domain.Artifact, string, error) {
 	path, err := s.Store.Path(cycle.ID, "judgment.json")
 	if err != nil {
 		return domain.Judgment{}, domain.Artifact{}, "", err
@@ -285,23 +289,56 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, obs
 	var judgment domain.Judgment
 	transport := cycle.JudgmentTransport
 	loadedFromDisk := false
+	var repositories []string
 	if data, readErr := os.ReadFile(path); readErr == nil {
 		loadedFromDisk = true
 		if err := json.Unmarshal(data, &judgment); err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("decode stored judgment: %w", err)
 		}
 	} else if os.IsNotExist(readErr) {
+		if cycle.JudgmentRetry != nil && cycle.JudgmentRetry.Outcome == "started" {
+			cycle.JudgmentRetry.Outcome = "indeterminate"
+			cycle.JudgmentRetry.Error = ErrJudgmentIndeterminate.Error()
+			return domain.Judgment{}, domain.Artifact{}, transport, ErrJudgmentIndeterminate
+		}
+		if cycle.IdempotencyKeys["judgment:attempt1"] != "" {
+			return domain.Judgment{}, domain.Artifact{}, transport, ErrJudgmentIndeterminate
+		}
 		if cycle.Judgment != nil || hasArtifactKind(cycle.Artifacts, "judgment") {
 			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("canonical judgment artifact is missing")
+		}
+		var listErr error
+		repositories, listErr = s.configuredRepositories()
+		if listErr != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, listErr
+		}
+		cycle.IdempotencyKeys["judgment:attempt1"] = "started"
+		if err := s.persist(ctx, cycle); err != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 		var metadata harness.Metadata
 		judgment, metadata, err = s.Judge.Judge(ctx, harness.JudgmentRequest{
 			WorkingDir: s.Config.ProjectDir, SchemaPath: s.Config.JudgmentSchemaPath,
-			OutputPath: path, Observation: observationJSON, MaxInputBytes: s.Config.MaxInputBytes,
+			OutputPath: strings.TrimSuffix(path, ".json") + "-attempt-1.raw.json", Observation: observationJSON, MaxInputBytes: s.Config.MaxInputBytes, RepositoryPaths: repositories,
 		})
 		transport = metadata.Transport
+		cycle.JudgmentTransport = transport
+		cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 1, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, CostUSD: metadata.CostUSD})
 		if err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
+		}
+		if err := s.bindRawJudgmentAttempt(cycle, 1); err != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, err
+		}
+		attemptArtifact, err := s.Store.WriteJSON(cycle.ID, "judgment-attempt-1", "judgment-attempt-1.json", judgment)
+		if err != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, err
+		}
+		cycle.JudgmentAttempts[len(cycle.JudgmentAttempts)-1].Artifact = attemptArtifact
+		appendArtifact(cycle, attemptArtifact)
+		cycle.IdempotencyKeys["judgment:attempt1"] = "completed"
+		if err := s.persist(ctx, cycle); err != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 	} else {
 		return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("read stored judgment: %w", readErr)
@@ -312,25 +349,75 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, obs
 		if err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
-		if err := ensureCanonicalArtifactBinding(cycle, current); err != nil {
+		if err := ensureCanonicalArtifactBinding(*cycle, current); err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 	}
 	if !canonicalFromDisk {
 		var rejected []domain.JudgmentRejection
-		judgment, rejected, err = s.filterJudgment(judgment, observation)
-		*rejections = rejected
+		judgment, rejected, err = s.filterJudgment(judgment, observation, repositories)
+		cycle.JudgmentRejections = rejected
+		if len(rejected) > 0 {
+			cycle.JudgmentRejectionAttempt = 1
+		}
+		if errors.Is(err, ErrNoValidOpportunities) && cycle.JudgmentRetry == nil {
+			cycle.JudgmentRetry = &domain.JudgmentRetry{Attempt: 2, Outcome: "started"}
+			cycle.JudgmentTransport = transport
+			if persistErr := s.persist(ctx, cycle); persistErr != nil {
+				return domain.Judgment{}, domain.Artifact{}, transport, persistErr
+			}
+			retryJudgment, metadata, retryErr := s.Judge.Judge(ctx, harness.JudgmentRequest{
+				WorkingDir: s.Config.ProjectDir, SchemaPath: s.Config.JudgmentSchemaPath,
+				OutputPath: strings.TrimSuffix(path, ".json") + "-attempt-2.raw.json", Observation: observationJSON,
+				MaxInputBytes: s.Config.MaxInputBytes, RepositoryPaths: repositories, RejectionReasons: rejected,
+			})
+			transport = metadata.Transport
+			cycle.JudgmentTransport = transport
+			cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 2, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, CostUSD: metadata.CostUSD})
+			if retryErr != nil {
+				cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "backend_error", retryErr.Error()
+				return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment corrective retry: %w", retryErr)
+			}
+			if err := s.bindRawJudgmentAttempt(cycle, 2); err != nil {
+				cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "artifact_error", err.Error()
+				return domain.Judgment{}, domain.Artifact{}, transport, err
+			}
+			attemptArtifact, writeErr := s.Store.WriteJSON(cycle.ID, "judgment-attempt-2", "judgment-attempt-2.json", retryJudgment)
+			if writeErr != nil {
+				cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "artifact_error", writeErr.Error()
+				return domain.Judgment{}, domain.Artifact{}, transport, writeErr
+			}
+			cycle.JudgmentAttempts[len(cycle.JudgmentAttempts)-1].Artifact = attemptArtifact
+			appendArtifact(cycle, attemptArtifact)
+			if err := s.persist(ctx, cycle); err != nil {
+				return domain.Judgment{}, domain.Artifact{}, transport, err
+			}
+			judgment, cycle.JudgmentRetry.Rejections, err = s.filterJudgment(retryJudgment, observation, repositories)
+			if err != nil {
+				cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "rejected", err.Error()
+				return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment corrective retry: %w", err)
+			}
+		}
 		if err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 		}
 	}
 	if err := domain.ValidateJudgment(judgment); err != nil {
+		if cycle.JudgmentRetry != nil && cycle.JudgmentRetry.Outcome == "started" {
+			cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "rejected", err.Error()
+		}
 		return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 	}
 	if err := validateEvidenceBindings(judgment, observation); err != nil {
+		if cycle.JudgmentRetry != nil && cycle.JudgmentRetry.Outcome == "started" {
+			cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "rejected", err.Error()
+		}
 		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	if err := validateSelectedRanking(judgment); err != nil {
+		if cycle.JudgmentRetry != nil && cycle.JudgmentRetry.Outcome == "started" {
+			cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "rejected", err.Error()
+		}
 		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	if cycle.Judgment != nil {
@@ -344,13 +431,36 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, obs
 	if err != nil {
 		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
-	if err := ensureCanonicalArtifactBinding(cycle, artifact); err != nil {
+	if err := ensureCanonicalArtifactBinding(*cycle, artifact); err != nil {
 		return domain.Judgment{}, domain.Artifact{}, transport, err
+	}
+	if cycle.JudgmentRetry != nil && cycle.JudgmentRetry.Outcome == "started" {
+		cycle.JudgmentRetry.Outcome = "accepted"
 	}
 	return judgment, artifact, transport, nil
 }
 
-func (s *Service) filterJudgment(judgment domain.Judgment, observation Observation) (domain.Judgment, []domain.JudgmentRejection, error) {
+func (s *Service) bindRawJudgmentAttempt(cycle *domain.Cycle, number int) error {
+	kind := fmt.Sprintf("judgment-attempt-%d-raw", number)
+	path, err := s.Store.Path(cycle.ID, fmt.Sprintf("judgment-attempt-%d.raw.json", number))
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	artifact, err := s.Store.HashExisting(kind, path)
+	if err != nil {
+		return err
+	}
+	appendArtifact(cycle, artifact)
+	cycle.JudgmentAttempts[len(cycle.JudgmentAttempts)-1].RawArtifact = &artifact
+	return nil
+}
+
+func (s *Service) filterJudgment(judgment domain.Judgment, observation Observation, repositories []string) (domain.Judgment, []domain.JudgmentRejection, error) {
 	if err := domain.ValidateJudgmentEnvelope(judgment); err != nil {
 		return domain.Judgment{}, nil, err
 	}
@@ -362,7 +472,14 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 	var rejected []domain.JudgmentRejection
 	selectedFilteredIndex := -1
 	for index, candidate := range judgment.Opportunities {
-		err := domain.ValidateCandidate(candidate)
+		var err error
+		candidate.Contract.Repository, err = s.normalizeRepository(candidate.Contract.Repository, repositories)
+		if errors.Is(err, ErrRepositoryCatalog) {
+			return domain.Judgment{}, rejected, err
+		}
+		if err == nil {
+			err = domain.ValidateCandidate(candidate)
+		}
 		if err == nil {
 			err = validateEvidenceBindings(domain.Judgment{Opportunities: []domain.Candidate{candidate}}, observation)
 		}
@@ -382,7 +499,7 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 		filtered.Opportunities = append(filtered.Opportunities, candidate)
 	}
 	if len(filtered.Opportunities) == 0 {
-		return domain.Judgment{}, rejected, fmt.Errorf("no valid opportunities remain after rejecting %d: opportunities[%d]: %s", len(rejected), rejected[0].Index, rejected[0].Reason)
+		return domain.Judgment{}, rejected, fmt.Errorf("%w after rejecting %d: opportunities[%d]: %s", ErrNoValidOpportunities, len(rejected), rejected[0].Index, rejected[0].Reason)
 	}
 	if judgment.SelectedIndex != nil {
 		if selectedFilteredIndex >= 0 {
@@ -398,6 +515,75 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 		}
 	}
 	return filtered, rejected, nil
+}
+
+// A relative name is accepted only when it identifies one discovered Git root
+// beneath the configured roots. This never changes validation of absolute paths.
+func (s *Service) normalizeRepository(repository string, repositories []string) (string, error) {
+	if filepath.IsAbs(repository) {
+		return repository, nil
+	}
+	if !filepath.IsLocal(repository) || filepath.Clean(repository) != repository {
+		return "", fmt.Errorf("relative repository %q is not a clean local path", repository)
+	}
+	known := make(map[string]bool, len(repositories))
+	for _, path := range repositories {
+		known[path] = true
+	}
+	matches := 0
+	var match string
+	for _, root := range s.Config.AllowedRepositoryRoots {
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return "", fmt.Errorf("%w: %w", ErrRepositoryCatalog, err)
+		}
+		path := filepath.Join(resolvedRoot, repository)
+		if known[path] {
+			matches++
+			match = path
+		}
+	}
+	if matches != 1 {
+		return "", fmt.Errorf("relative repository %q does not map to exactly one configured repository", repository)
+	}
+	return match, nil
+}
+
+func (s *Service) configuredRepositories() ([]string, error) {
+	known := map[string]bool{}
+	for _, root := range s.Config.AllowedRepositoryRoots {
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrRepositoryCatalog, err)
+		}
+		err = filepath.WalkDir(resolvedRoot, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if path == resolvedRoot {
+					return walkErr
+				}
+				return filepath.SkipDir
+			}
+			if !entry.IsDir() {
+				return nil
+			}
+			if entry.Name() == "node_modules" || entry.Name() == "vendor" || entry.Name() == ".git" || entry.Name() == ".venv" || entry.Name() == ".cache" || entry.Name() == "target" || entry.Name() == "dist" {
+				return filepath.SkipDir
+			}
+			if _, err := os.Stat(filepath.Join(path, ".git")); err == nil {
+				known[path] = true
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrRepositoryCatalog, err)
+		}
+	}
+	paths := make([]string, 0, len(known))
+	for path := range known {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	return paths, nil
 }
 
 func hasArtifactKind(artifacts []domain.Artifact, kind string) bool {
