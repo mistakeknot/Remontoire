@@ -87,7 +87,7 @@ func (s *Service) continueObservation(ctx context.Context, cycle *domain.Cycle) 
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
 	}
-	judgment, judgmentArtifact, judgmentTransport, err := s.loadOrRunJudgment(ctx, *cycle, observation, observationJSON)
+	judgment, judgmentArtifact, judgmentTransport, err := s.loadOrRunJudgment(ctx, *cycle, observation, observationJSON, &cycle.JudgmentRejections)
 	cycle.JudgmentTransport = judgmentTransport
 	if err != nil {
 		return *cycle, s.fail(ctx, cycle, err)
@@ -277,7 +277,7 @@ func (s *Service) validateStoredObservation(cycle domain.Cycle, observation Obse
 	return nil
 }
 
-func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, observation Observation, observationJSON []byte) (domain.Judgment, domain.Artifact, string, error) {
+func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, observation Observation, observationJSON []byte, rejections *[]domain.JudgmentRejection) (domain.Judgment, domain.Artifact, string, error) {
 	path, err := s.Store.Path(cycle.ID, "judgment.json")
 	if err != nil {
 		return domain.Judgment{}, domain.Artifact{}, "", err
@@ -306,13 +306,22 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, obs
 	} else {
 		return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("read stored judgment: %w", readErr)
 	}
-	if loadedFromDisk {
+	canonicalFromDisk := loadedFromDisk && (cycle.Judgment != nil || hasArtifactKind(cycle.Artifacts, "judgment"))
+	if canonicalFromDisk {
 		current, err := s.Store.HashExisting("judgment", path)
 		if err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, err
 		}
 		if err := ensureCanonicalArtifactBinding(cycle, current); err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, err
+		}
+	}
+	if !canonicalFromDisk {
+		var rejected []domain.JudgmentRejection
+		judgment, rejected, err = s.filterJudgment(judgment, observation)
+		*rejections = rejected
+		if err != nil {
+			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 		}
 	}
 	if err := domain.ValidateJudgment(judgment); err != nil {
@@ -339,6 +348,45 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle domain.Cycle, obs
 		return domain.Judgment{}, domain.Artifact{}, transport, err
 	}
 	return judgment, artifact, transport, nil
+}
+
+func (s *Service) filterJudgment(judgment domain.Judgment, observation Observation) (domain.Judgment, []domain.JudgmentRejection, error) {
+	if err := domain.ValidateJudgmentEnvelope(judgment); err != nil {
+		return domain.Judgment{}, nil, err
+	}
+	if len(judgment.Opportunities) == 0 {
+		return judgment, nil, nil // An explicit no-op is valid without candidates.
+	}
+	filtered := judgment
+	filtered.Opportunities = make([]domain.Candidate, 0, len(judgment.Opportunities))
+	var rejected []domain.JudgmentRejection
+	for index, candidate := range judgment.Opportunities {
+		err := domain.ValidateCandidate(candidate)
+		if err == nil {
+			err = validateEvidenceBindings(domain.Judgment{Opportunities: []domain.Candidate{candidate}}, observation)
+		}
+		if err == nil {
+			err = s.validateRepository(candidate.Contract.Repository)
+		}
+		if err != nil {
+			rejected = append(rejected, domain.JudgmentRejection{Index: index, Title: candidate.Title, Reason: err.Error()})
+			continue
+		}
+		filtered.Opportunities = append(filtered.Opportunities, candidate)
+	}
+	if len(filtered.Opportunities) == 0 {
+		return domain.Judgment{}, rejected, fmt.Errorf("no valid opportunities remain after rejecting %d: opportunities[%d]: %s", len(rejected), rejected[0].Index, rejected[0].Reason)
+	}
+	if judgment.SelectedIndex != nil {
+		best := 0
+		for index := 1; index < len(filtered.Opportunities); index++ {
+			if leverageScore(filtered.Opportunities[index]) > leverageScore(filtered.Opportunities[best])+1e-9 {
+				best = index
+			}
+		}
+		filtered.SelectedIndex = &best
+	}
+	return filtered, rejected, nil
 }
 
 func hasArtifactKind(artifacts []domain.Artifact, kind string) bool {

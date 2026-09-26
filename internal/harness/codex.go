@@ -55,7 +55,7 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 	if err := decodeFile(request.OutputPath, &judgment); err != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("codex judgment: %w", err)
 	}
-	if err := domain.ValidateJudgment(judgment); err != nil {
+	if err := domain.ValidateJudgmentEnvelope(judgment); err != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("codex judgment policy: %w", err)
 	}
 	return judgment, meta, nil

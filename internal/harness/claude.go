@@ -45,7 +45,7 @@ func (c Claude) Judge(ctx context.Context, request JudgmentRequest) (domain.Judg
 	if decodeErr != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("claude judgment: %w", decodeErr)
 	}
-	if err := domain.ValidateJudgment(judgment); err != nil {
+	if err := domain.ValidateJudgmentEnvelope(judgment); err != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("claude judgment policy: %w", err)
 	}
 	return judgment, meta, nil
