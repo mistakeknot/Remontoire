@@ -121,9 +121,10 @@ type Judgment struct {
 }
 
 type JudgmentRejection struct {
-	Index  int    `json:"index"`
-	Title  string `json:"title"`
-	Reason string `json:"reason"`
+	Index    int    `json:"index"`
+	Title    string `json:"title"`
+	Reason   string `json:"reason"`
+	Selected bool   `json:"selected,omitempty"`
 }
 
 type Approval struct {

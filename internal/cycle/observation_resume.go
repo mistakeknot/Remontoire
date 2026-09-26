@@ -360,6 +360,7 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 	filtered := judgment
 	filtered.Opportunities = make([]domain.Candidate, 0, len(judgment.Opportunities))
 	var rejected []domain.JudgmentRejection
+	selectedFilteredIndex := -1
 	for index, candidate := range judgment.Opportunities {
 		err := domain.ValidateCandidate(candidate)
 		if err == nil {
@@ -369,8 +370,14 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 			err = s.validateRepository(candidate.Contract.Repository)
 		}
 		if err != nil {
-			rejected = append(rejected, domain.JudgmentRejection{Index: index, Title: candidate.Title, Reason: err.Error()})
+			rejected = append(rejected, domain.JudgmentRejection{
+				Index: index, Title: candidate.Title, Reason: err.Error(),
+				Selected: judgment.SelectedIndex != nil && *judgment.SelectedIndex == index,
+			})
 			continue
+		}
+		if judgment.SelectedIndex != nil && *judgment.SelectedIndex == index {
+			selectedFilteredIndex = len(filtered.Opportunities)
 		}
 		filtered.Opportunities = append(filtered.Opportunities, candidate)
 	}
@@ -378,13 +385,17 @@ func (s *Service) filterJudgment(judgment domain.Judgment, observation Observati
 		return domain.Judgment{}, rejected, fmt.Errorf("no valid opportunities remain after rejecting %d: opportunities[%d]: %s", len(rejected), rejected[0].Index, rejected[0].Reason)
 	}
 	if judgment.SelectedIndex != nil {
-		best := 0
-		for index := 1; index < len(filtered.Opportunities); index++ {
-			if leverageScore(filtered.Opportunities[index]) > leverageScore(filtered.Opportunities[best])+1e-9 {
-				best = index
+		if selectedFilteredIndex >= 0 {
+			filtered.SelectedIndex = &selectedFilteredIndex
+		} else {
+			best := 0
+			for index := 1; index < len(filtered.Opportunities); index++ {
+				if leverageScore(filtered.Opportunities[index]) > leverageScore(filtered.Opportunities[best])+1e-9 {
+					best = index
+				}
 			}
+			filtered.SelectedIndex = &best
 		}
-		filtered.SelectedIndex = &best
 	}
 	return filtered, rejected, nil
 }

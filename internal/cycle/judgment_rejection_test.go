@@ -66,6 +66,55 @@ func TestInvalidOpportunityDoesNotDiscardValidNoOp(t *testing.T) {
 	}
 }
 
+func TestFilteredJudgmentIsCanonicalAndReplayable(t *testing.T) {
+	service, _, _ := testService(t, domain.ModeShadow)
+	service.Judge = dynamicJudge{call: func(request harness.JudgmentRequest) domain.Judgment {
+		judgment := selectedJudgment(t, request, service.Config.ProjectDir)
+		invalid := judgment.Opportunities[0]
+		invalid.Contract.Metric.Target = 60000
+		judgment.Opportunities = []domain.Candidate{invalid, judgment.Opportunities[0]}
+		return judgment
+	}}
+	cycle, err := service.Start(context.Background(), domain.ModeShadow)
+	if err != nil || cycle.Stage != domain.StageCompleted {
+		t.Fatalf("cycle stage=%s error=%v", cycle.Stage, err)
+	}
+	var stored domain.Judgment
+	if err := service.Store.ReadJSON(cycle.ID, "judgment.json", &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Opportunities) != 1 || stored.Opportunities[0].Contract.Metric.Target != 80 {
+		t.Fatalf("stored judgment = %#v", stored)
+	}
+	var observation Observation
+	if err := service.Store.ReadJSON(cycle.ID, "observation.json", &observation); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateReplayJudgment(stored, observation); err != nil {
+		t.Fatalf("replay judgment: %v", err)
+	}
+	rejections := append([]domain.JudgmentRejection(nil), cycle.JudgmentRejections...)
+	_, _, _, err = service.loadOrRunJudgment(context.Background(), cycle, observation, nil, &rejections)
+	if err != nil || len(rejections) != 1 {
+		t.Fatalf("reload error=%v rejections=%#v", err, rejections)
+	}
+}
+
+func TestSurvivingSelectionKeepsOriginalIndex(t *testing.T) {
+	service, _, _ := testService(t, domain.ModeShadow)
+	service.Judge = dynamicJudge{call: func(request harness.JudgmentRequest) domain.Judgment {
+		judgment := selectedJudgment(t, request, service.Config.ProjectDir)
+		judgment.Opportunities = []domain.Candidate{judgment.Opportunities[0], judgment.Opportunities[0]}
+		index := 1
+		judgment.SelectedIndex = &index
+		return judgment
+	}}
+	cycle, err := service.Start(context.Background(), domain.ModeShadow)
+	if err != nil || cycle.Judgment == nil || cycle.Judgment.SelectedIndex == nil || *cycle.Judgment.SelectedIndex != 1 {
+		t.Fatalf("cycle judgment=%#v error=%v", cycle.Judgment, err)
+	}
+}
+
 func TestRejectedSelectionPromotesHighestValidOpportunity(t *testing.T) {
 	service, _, backlog := testService(t, domain.ModeProposal)
 	service.Judge = dynamicJudge{call: func(request harness.JudgmentRequest) domain.Judgment {
@@ -79,7 +128,7 @@ func TestRejectedSelectionPromotesHighestValidOpportunity(t *testing.T) {
 	if err != nil || cycle.Stage != domain.StageAwaitingApproval {
 		t.Fatalf("cycle stage=%s error=%v", cycle.Stage, err)
 	}
-	if len(cycle.JudgmentRejections) != 1 || cycle.Judgment.SelectedIndex == nil || *cycle.Judgment.SelectedIndex != 0 || backlog.createCalls != 1 {
+	if len(cycle.JudgmentRejections) != 1 || !cycle.JudgmentRejections[0].Selected || cycle.Judgment.SelectedIndex == nil || *cycle.Judgment.SelectedIndex != 0 || backlog.createCalls != 1 {
 		t.Fatalf("rejections=%#v judgment=%#v calls=%d", cycle.JudgmentRejections, cycle.Judgment, backlog.createCalls)
 	}
 	if cycle.Candidate.Contract.Metric.Target != 80 {
