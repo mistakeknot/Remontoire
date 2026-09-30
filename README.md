@@ -8,6 +8,14 @@ Remontoire is a standalone L2 project. It chooses which uncertainty is worth
 resolving next. It does not replace the systems around it:
 
 - Beads owns backlog truth.
+
+`project_dir` binds the Intercore kernel and Ockham policy context. Optional
+`backlog_dir` selects the Beads repository independently and defaults to
+`project_dir` for existing configurations. A Sylveste-specific portfolio should
+read `/home/mk/projects/Sylveste`, rather than the umbrella projects tracker.
+Do not change this binding while an unfinished cycle references an experiment
+in the old tracker: finish that cycle first or retain its original configuration
+for recovery. Changing a backlog path does not migrate issues or cycle state.
 - Intercore owns durable state, locks, events, replay inputs, and receipts.
 - Ockham owns strategic intent and dispatch policy.
 - Codex, Claude, Skaffen, and Clavain are execution harnesses.

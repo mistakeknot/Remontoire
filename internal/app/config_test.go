@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mistakeknot/Remontoire/internal/adapters"
 	cyclepkg "github.com/mistakeknot/Remontoire/internal/cycle"
 	"github.com/mistakeknot/Remontoire/internal/domain"
 	"github.com/mistakeknot/Remontoire/internal/harness"
@@ -146,5 +147,27 @@ func TestExampleConfigParsesStrictly(t *testing.T) {
 	}
 	if _, err := LoadConfig(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBacklogDirectoryDefaultsAndSeparatesFromKernel(t *testing.T) {
+	cfg := validConfig(t)
+	cfg.applyDefaults()
+	if cfg.BacklogDir != cfg.ProjectDir {
+		t.Fatal("legacy backlog default changed")
+	}
+	cfg.BacklogDir = filepath.Join(cfg.ProjectDir, "Sylveste")
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backlog := app.Backlog.(*adapters.Beads)
+	state := app.State.(*adapters.Intercore)
+	if backlog.Dir != cfg.BacklogDir || state.Dir != cfg.ProjectDir {
+		t.Fatal("backlog and kernel binding conflated")
+	}
+	cfg.BacklogDir = "relative"
+	if cfg.Validate() == nil {
+		t.Fatal("relative backlog directory accepted")
 	}
 }
