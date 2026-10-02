@@ -29,12 +29,16 @@ func (c Claude) Judge(ctx context.Context, request JudgmentRequest) (domain.Judg
 	if err != nil {
 		return domain.Judgment{}, Metadata{}, err
 	}
+	prompt, err := boundedJudgmentPrompt(request, sanitized)
+	if err != nil {
+		return domain.Judgment{}, Metadata{}, err
+	}
 	schema, err := schemaJSON(request.SchemaJSON, request.SchemaPath)
 	if err != nil {
 		return domain.Judgment{}, Metadata{}, err
 	}
 	args := c.readOnlyArgs(schema, request.MaxBudgetUSD)
-	result, err := c.run(ctx, request.WorkingDir, args, []byte(judgmentPrompt(sanitized)))
+	result, err := c.run(ctx, request.WorkingDir, args, []byte(prompt))
 	meta := Metadata{Backend: c.Name(), Model: c.Model, Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err
@@ -45,7 +49,7 @@ func (c Claude) Judge(ctx context.Context, request JudgmentRequest) (domain.Judg
 	if decodeErr != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("claude judgment: %w", decodeErr)
 	}
-	if err := domain.ValidateJudgment(judgment); err != nil {
+	if err := domain.ValidateJudgmentEnvelope(judgment); err != nil {
 		return domain.Judgment{}, meta, fmt.Errorf("claude judgment policy: %w", err)
 	}
 	return judgment, meta, nil

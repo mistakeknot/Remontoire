@@ -197,7 +197,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 			return cycle, hashErr
 		}
 		cycle.Artifacts = append(cycle.Artifacts, reportArtifact)
-		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Turns: cycle.Execution.Turns, CostUSD: cycle.Execution.CostUSD}
+		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Transport: cycle.Execution.Transport, Turns: cycle.Execution.Turns, CostUSD: cycle.Execution.CostUSD}
 	} else if invokeExecution {
 		executionCtx, cancel := context.WithTimeout(ctx, time.Duration(cycle.Candidate.Contract.Budget.MaxDurationSeconds)*time.Second)
 		report, metadata, err = executor.Execute(executionCtx, harness.ExecutionRequest{
@@ -259,6 +259,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 		}
 		cycle.Execution.Backend = metadata.Backend
 		cycle.Execution.Model = metadata.Model
+		cycle.Execution.Transport = metadata.Transport
 		cycle.Execution.Turns = metadata.Turns
 		cycle.Execution.CostUSD = metadata.CostUSD
 		cycle.Execution.ChangedPaths = changed

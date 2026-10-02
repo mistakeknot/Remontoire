@@ -182,6 +182,23 @@ func TestValidateJudgment(t *testing.T) {
 	}
 }
 
+func TestValidateJudgmentEnvelopeSeparatesStructureFromCandidatePolicy(t *testing.T) {
+	selected := 0
+	judgment := Judgment{SchemaVersion: JudgmentSchemaV1, Opportunities: []Candidate{validCandidate()}, SelectedIndex: &selected}
+	judgment.Opportunities[0].Contract.Metric.Target = 200
+	if err := ValidateJudgmentEnvelope(judgment); err != nil {
+		t.Fatalf("valid envelope with invalid candidate: %v", err)
+	}
+	if err := ValidateJudgment(judgment); err == nil || !strings.Contains(err.Error(), "target must be below baseline") {
+		t.Fatalf("candidate policy error = %v", err)
+	}
+	badIndex := 1
+	judgment.SelectedIndex = &badIndex
+	if err := ValidateJudgmentEnvelope(judgment); err == nil || !strings.Contains(err.Error(), "selected_index") {
+		t.Fatalf("structural index error = %v", err)
+	}
+}
+
 func TestValidateApproval(t *testing.T) {
 	contract := validContract()
 	hash, err := HashContract(contract)

@@ -120,6 +120,31 @@ type Judgment struct {
 	NoOpReason    string      `json:"no_op_reason"`
 }
 
+type JudgmentRejection struct {
+	Index    int    `json:"index"`
+	Title    string `json:"title"`
+	Reason   string `json:"reason"`
+	Selected bool   `json:"selected,omitempty"`
+}
+
+type JudgmentRetry struct {
+	Attempt    int                 `json:"attempt"`
+	Outcome    string              `json:"outcome"`
+	Rejections []JudgmentRejection `json:"rejections,omitempty"`
+	Error      string              `json:"error,omitempty"`
+}
+
+type JudgmentAttempt struct {
+	Number      int       `json:"number"`
+	Backend     string    `json:"backend,omitempty"`
+	Model       string    `json:"model,omitempty"`
+	Transport   string    `json:"transport,omitempty"`
+	Turns       int       `json:"turns,omitempty"`
+	CostUSD     float64   `json:"cost_usd,omitempty"`
+	Artifact    Artifact  `json:"artifact,omitempty"`
+	RawArtifact *Artifact `json:"raw_artifact,omitempty"`
+}
+
 type Approval struct {
 	SchemaVersion string    `json:"schema_version"`
 	CycleID       string    `json:"cycle_id"`
@@ -149,6 +174,7 @@ type Measurement struct {
 type ExecutionRecord struct {
 	Backend      string    `json:"backend"`
 	Model        string    `json:"model,omitempty"`
+	Transport    string    `json:"transport,omitempty"`
 	WorktreePath string    `json:"worktree_path"`
 	BaseCommit   string    `json:"base_commit"`
 	StartedAt    time.Time `json:"started_at"`
@@ -167,12 +193,13 @@ type Review struct {
 }
 
 type ReviewResolution struct {
-	ReviewerVerdict Verdict   `json:"reviewer_verdict"`
-	FinalVerdict    Verdict   `json:"final_verdict"`
-	OverrideReason  string    `json:"override_reason,omitempty"`
-	ReviewerBackend string    `json:"reviewer_backend,omitempty"`
-	ReviewerModel   string    `json:"reviewer_model,omitempty"`
-	ResolvedAt      time.Time `json:"resolved_at"`
+	ReviewerVerdict   Verdict   `json:"reviewer_verdict"`
+	FinalVerdict      Verdict   `json:"final_verdict"`
+	OverrideReason    string    `json:"override_reason,omitempty"`
+	ReviewerBackend   string    `json:"reviewer_backend,omitempty"`
+	ReviewerModel     string    `json:"reviewer_model,omitempty"`
+	ReviewerTransport string    `json:"reviewer_transport,omitempty"`
+	ResolvedAt        time.Time `json:"resolved_at"`
 }
 
 type OutcomeSummary struct {
@@ -201,32 +228,37 @@ type Artifact struct {
 }
 
 type Cycle struct {
-	SchemaVersion    string            `json:"schema_version"`
-	ID               string            `json:"id"`
-	RunID            string            `json:"run_id,omitempty"`
-	Portfolio        string            `json:"portfolio"`
-	Mode             Mode              `json:"mode"`
-	Stage            Stage             `json:"stage"`
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
-	Judgment         *Judgment         `json:"judgment,omitempty"`
-	NoOpReason       string            `json:"no_op_reason,omitempty"`
-	Candidate        *Candidate        `json:"candidate,omitempty"`
-	CandidateHash    string            `json:"candidate_hash,omitempty"`
-	ContractHash     string            `json:"contract_hash,omitempty"`
-	ExperimentBeadID string            `json:"experiment_bead_id,omitempty"`
-	PromotionBeadID  string            `json:"promotion_bead_id,omitempty"`
-	Approval         *Approval         `json:"approval,omitempty"`
-	Decline          *Decline          `json:"decline,omitempty"`
-	Execution        *ExecutionRecord  `json:"execution,omitempty"`
-	Measurement      *Measurement      `json:"measurement,omitempty"`
-	Review           *Review           `json:"review,omitempty"`
-	Resolution       *ReviewResolution `json:"resolution,omitempty"`
-	Artifacts        []Artifact        `json:"artifacts,omitempty"`
-	IdempotencyKeys  map[string]string `json:"idempotency_keys,omitempty"`
-	RoadmapDigest    string            `json:"roadmap_digest,omitempty"`
-	SignedReceiptID  string            `json:"signed_receipt_id,omitempty"`
-	Failure          string            `json:"failure,omitempty"`
+	SchemaVersion            string              `json:"schema_version"`
+	ID                       string              `json:"id"`
+	RunID                    string              `json:"run_id,omitempty"`
+	Portfolio                string              `json:"portfolio"`
+	Mode                     Mode                `json:"mode"`
+	Stage                    Stage               `json:"stage"`
+	CreatedAt                time.Time           `json:"created_at"`
+	UpdatedAt                time.Time           `json:"updated_at"`
+	Judgment                 *Judgment           `json:"judgment,omitempty"`
+	JudgmentTransport        string              `json:"judgment_transport,omitempty"`
+	JudgmentRejections       []JudgmentRejection `json:"judgment_rejections,omitempty"`
+	JudgmentRejectionAttempt int                 `json:"judgment_rejection_attempt,omitempty"`
+	JudgmentRetry            *JudgmentRetry      `json:"judgment_retry,omitempty"`
+	JudgmentAttempts         []JudgmentAttempt   `json:"judgment_attempts,omitempty"`
+	NoOpReason               string              `json:"no_op_reason,omitempty"`
+	Candidate                *Candidate          `json:"candidate,omitempty"`
+	CandidateHash            string              `json:"candidate_hash,omitempty"`
+	ContractHash             string              `json:"contract_hash,omitempty"`
+	ExperimentBeadID         string              `json:"experiment_bead_id,omitempty"`
+	PromotionBeadID          string              `json:"promotion_bead_id,omitempty"`
+	Approval                 *Approval           `json:"approval,omitempty"`
+	Decline                  *Decline            `json:"decline,omitempty"`
+	Execution                *ExecutionRecord    `json:"execution,omitempty"`
+	Measurement              *Measurement        `json:"measurement,omitempty"`
+	Review                   *Review             `json:"review,omitempty"`
+	Resolution               *ReviewResolution   `json:"resolution,omitempty"`
+	Artifacts                []Artifact          `json:"artifacts,omitempty"`
+	IdempotencyKeys          map[string]string   `json:"idempotency_keys,omitempty"`
+	RoadmapDigest            string              `json:"roadmap_digest,omitempty"`
+	SignedReceiptID          string              `json:"signed_receipt_id,omitempty"`
+	Failure                  string              `json:"failure,omitempty"`
 }
 
 type Receipt struct {

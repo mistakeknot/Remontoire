@@ -18,11 +18,69 @@ changes.
 | User units | `~/.config/systemd/user/remontoire.{service,timer}` |
 
 The config contains paths and backend choices only. Do not add credentials to
-the config or unit. The proposal unit gives Codex a dedicated writable runtime
-home and binds only `~/.codex/auth.json` into it. That one file remains writable
-so Codex can persist token refreshes; the rest of `~/.codex` stays read-only.
-Claude uses the existing `mk` user session during manual approved execution or
-review.
+the config or unit. The Codex harness first uses `bb pool exec` to fetch the
+current machine credential in memory and run on the primary enrolled host. If
+the pool or its host runner is definitely unavailable before Codex starts, the
+harness falls back once to direct Codex. Unknown or post-start failures are not
+replayed. Cycle records identify `pooled`, `pool-unconfirmed` (no confirmed
+provider pin), or `direct-fallback` transport. Even a zero exit without the
+pooler's provider-pin marker is unconfirmed and is not replayed.
+The short-lived `0600` prompt handoff uses the same fixed default as the host:
+`$HOME/.local/state/bb-account-pool/exec-input`. It stays visible despite the
+unit's private `/tmp` and is deleted when the invocation returns. Remontoire and
+the enrolled host must run as the same user. A 414 KiB prompt travels by file,
+never as one argv string (Linux limits each string to about 128 KiB).
+
+The pool host creates the default directory with mode `0700` when missing and
+checks its effective owner and exact permissions before opening a prompt.
+The default works after plugin reload without changing BB's startup environment.
+An existing `BB_ACCOUNT_POOL_EXEC_INPUT_DIR` server-startup override wins; it
+must match the caller's input directory. CLI, settings RPC and KV cannot change
+this operator-owned path.
+
+The effective zklw unit has `ProtectHome=read-only`, `ProtectSystem=strict` and
+`PrivateTmp=yes`. Its current writable paths do not include the input directory.
+Before the next separately approved service activation, the coordinator must
+pre-create `/home/mk/.local/state/bb-account-pool/exec-input` owned by `mk`, mode
+`0700`, and add this line without clearing existing `ReadWritePaths` entries:
+
+```ini
+[Service]
+ReadWritePaths=/home/mk/.local/state/bb-account-pool/exec-input
+```
+
+The path must exist before service start; a missing-path `-` prefix would not
+grant access later. No unit, live directory or service activation is changed by
+this branch. This narrow writable exception preserves home protection and
+private temporary files; see [systemd.exec](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#ReadWritePaths=).
+The Linux host reads only
+regular, non-symlink direct children through checked `O_NOFOLLOW` descriptors.
+It refuses root, home, its configured/default Codex homes, their ancestors and
+their descendants. It does not repair unsafe ownership or permissions.
+
+Streaming through the CLI request body would avoid the prompt file but requires
+core CLI/transport changes, payload-limit and cancellation handling beyond a
+plugin-only reload. The default directory reuses the existing 8 MiB bounded
+file/host RPC contract and needs only the writable-path exception above. No
+pooled bearer is stored in the prompt file.
+
+The pooled child belongs to the BB host daemon, not to `remontoire.service`.
+Consequently the service's `ProtectHome`, `PrivateTmp`, sanitized environment,
+and dedicated `CODEX_HOME` do not contain that child; Codex's own `--sandbox`
+and approval policy remain the execution boundary. The rollout canary must also
+confirm that the installed Codex honors the explicit pooled `-c` provider
+settings when `--ignore-user-config` is present.
+Pooled calls contain no caller `-c`/`--config`: the host owns the provider pin,
+`approval_policy="never"`, and `sandbox_workspace_write.network_access=false`
+inside `exec`. The direct fallback retains those last two execution restrictions
+as direct-only arguments. The pooler's narrow argument allowlist rejects
+profiles, alternate providers, and arbitrary configuration.
+
+The proposal unit retains a dedicated writable Codex runtime home for that
+direct fallback and binds only `~/.codex/auth.json` into it. That one file
+remains writable so Codex can persist token refreshes; the rest of `~/.codex`
+stays read-only. Claude uses the existing `mk` user session during manual
+approved execution or review.
 
 ## Install Without Activation
 
@@ -58,6 +116,8 @@ Run every check before the first service invocation:
 
 ```bash
 ~/.local/bin/remontoire --config="$HOME/.config/remontoire/config.json" doctor --json
+bb pool status --json
+bb pool config
 test -r "$HOME/.codex/auth.json" && test -w "$HOME/.codex/auth.json"
 systemd-analyze verify ~/.config/systemd/user/remontoire.service ~/.config/systemd/user/remontoire.timer
 systemctl --user status remontoire.timer --no-pager

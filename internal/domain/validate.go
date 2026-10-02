@@ -236,7 +236,7 @@ func normalizeWords(value string) string {
 	return strings.ToLower(strings.Join(strings.FieldsFunc(value, unicode.IsSpace), " "))
 }
 
-func ValidateJudgment(j Judgment) error {
+func ValidateJudgmentEnvelope(j Judgment) error {
 	if j.SchemaVersion != JudgmentSchemaV1 {
 		return fmt.Errorf("schema_version must be %q", JudgmentSchemaV1)
 	}
@@ -249,21 +249,30 @@ func ValidateJudgment(j Judgment) error {
 	if j.SelectedIndex == nil && blank(j.NoOpReason) {
 		return fmt.Errorf("either selected_index or no_op_reason is required")
 	}
+	if j.SelectedIndex != nil && (*j.SelectedIndex < 0 || *j.SelectedIndex >= len(j.Opportunities)) {
+		return fmt.Errorf("selected_index is outside opportunities")
+	}
+	return nil
+}
+
+func ValidateJudgment(j Judgment) error {
+	if err := ValidateJudgmentEnvelope(j); err != nil {
+		return err
+	}
 	for i, candidate := range j.Opportunities {
 		if err := validateCandidate(candidate); err != nil {
 			return fmt.Errorf("opportunities[%d]: %w", i, err)
 		}
 	}
 	if j.SelectedIndex != nil {
-		if *j.SelectedIndex < 0 || *j.SelectedIndex >= len(j.Opportunities) {
-			return fmt.Errorf("selected_index is outside opportunities")
-		}
 		if j.Opportunities[*j.SelectedIndex].Priority != 4 {
 			return fmt.Errorf("selected opportunity must be P4")
 		}
 	}
 	return nil
 }
+
+func ValidateCandidate(c Candidate) error { return validateCandidate(c) }
 
 func validateCandidate(c Candidate) error {
 	if blank(c.Title) {

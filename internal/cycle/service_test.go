@@ -303,7 +303,7 @@ func (j cancelingJudge) Judge(context.Context, harness.JudgmentRequest) (domain.
 }
 
 func (j dynamicJudge) Judge(_ context.Context, request harness.JudgmentRequest) (domain.Judgment, harness.Metadata, error) {
-	return j.call(request), harness.Metadata{Backend: "fake", Model: "fixture"}, nil
+	return j.call(request), harness.Metadata{Backend: "fake", Model: "fixture", Transport: "pooled"}, nil
 }
 
 func selectedJudgment(t *testing.T, request harness.JudgmentRequest, repository string) domain.Judgment {
@@ -514,20 +514,25 @@ func TestResumeObservationUsesStoredSnapshotWithoutLiveSourceReads(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if completed.JudgmentTransport != "pooled" {
+		t.Fatalf("judgment transport = %q, want pooled", completed.JudgmentTransport)
+	}
 	replayCount := len(kernel.replay)
 	completed.Stage = domain.StageObserving
 	completed.Judgment = nil
 	completed.Candidate = nil
 	completed.CandidateHash = ""
 	completed.ContractHash = ""
+	completed.JudgmentAttempts = nil // Simulate interruption before any judgment invocation.
 	kept := completed.Artifacts[:0]
 	for _, artifact := range completed.Artifacts {
-		if artifact.Kind != "judgment" {
+		if artifact.Kind != "judgment" && artifact.Kind != "judgment-attempt-1" {
 			kept = append(kept, artifact)
 		}
 	}
 	completed.Artifacts = kept
 	delete(completed.IdempotencyKeys, "run:rank")
+	delete(completed.IdempotencyKeys, "judgment:attempt1")
 	delete(completed.IdempotencyKeys, "event:no_op")
 	delete(completed.IdempotencyKeys, "event:completed")
 	judgmentPath, err := service.Store.Path(completed.ID, "judgment.json")
@@ -535,6 +540,13 @@ func TestResumeObservationUsesStoredSnapshotWithoutLiveSourceReads(t *testing.T)
 		t.Fatal(err)
 	}
 	if err := os.Remove(judgmentPath); err != nil {
+		t.Fatal(err)
+	}
+	attemptPath, err := service.Store.Path(completed.ID, "judgment-attempt-1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(attemptPath); err != nil {
 		t.Fatal(err)
 	}
 	kernel.cycles[completed.ID] = completed

@@ -10,6 +10,7 @@ import (
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	cyclepkg "github.com/mistakeknot/Remontoire/internal/cycle"
 	"github.com/mistakeknot/Remontoire/internal/domain"
+	"github.com/mistakeknot/Remontoire/internal/harness"
 )
 
 func validConfig(t *testing.T) Config {
@@ -133,6 +134,9 @@ func TestNewWiresExistingAdaptersIntoCycleService(t *testing.T) {
 	}
 	if len(service.Executors) != 2 || len(service.Reviewers) != 2 || service.Judge == nil || service.Config.RoadmapPath != application.Config.RoadmapPath {
 		t.Fatalf("backend/config wiring = %#v", service)
+	}
+	if codex, ok := service.Executors["codex"].(*harness.Codex); !ok || codex.PoolInputDir != "" {
+		t.Fatal("Codex must use the daemon input default, not the artifact root")
 	}
 }
 

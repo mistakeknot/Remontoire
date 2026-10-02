@@ -22,7 +22,7 @@ type dynamicReviewer struct {
 
 func (r *dynamicReviewer) Review(_ context.Context, request harness.ReviewRequest) (domain.Review, harness.Metadata, error) {
 	r.calls++
-	return r.call(request), harness.Metadata{Backend: "claude", Model: "review-fixture", Turns: 2, CostUSD: 0.1}, nil
+	return r.call(request), harness.Metadata{Backend: "claude", Model: "review-fixture", Transport: "pooled", Turns: 2, CostUSD: 0.1}, nil
 }
 
 type failingReviewer struct {
@@ -120,6 +120,9 @@ func TestReviewAndCompoundPromotionClosesLoopExactlyOnce(t *testing.T) {
 	}
 	if reviewed.Stage != domain.StageCompounding || reviewed.Resolution == nil || reviewed.Resolution.FinalVerdict != domain.VerdictPromote {
 		t.Fatalf("reviewed cycle = %#v", reviewed)
+	}
+	if reviewed.Resolution.ReviewerTransport != "pooled" {
+		t.Fatalf("review transport = %q, want pooled", reviewed.Resolution.ReviewerTransport)
 	}
 	completed, err := service.Compound(context.Background(), cycle.ID)
 	if err != nil {

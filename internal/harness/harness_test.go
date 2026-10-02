@@ -4,29 +4,87 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
 )
 
 type fakeRunner struct {
-	calls     []adapters.Invocation
-	responses []adapters.Result
+	calls      []adapters.Invocation
+	responses  []adapters.Result
+	errors     []error
+	poolInputs [][]byte
+	deadlines  []time.Time
 }
 
-func (r *fakeRunner) Run(_ context.Context, invocation adapters.Invocation) (adapters.Result, error) {
+func TestJudgmentPromptIncludesExactRepositoryListAndCorrection(t *testing.T) {
+	prompt := judgmentPrompt([]byte(`{"beads":[]}`), []string{"/home/mk/projects/shadow-work"}, []domain.JudgmentRejection{{Index: 0, Reason: "metric target must be below baseline when minimizing"}})
+	for _, required := range []string{"/home/mk/projects/shadow-work", "absolute path copied exactly", "baseline 120000 ms", "target such as 60000 ms", "Corrective retry", "metric target must be below baseline when minimizing"} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("prompt missing %q", required)
+		}
+	}
+	if !strings.Contains(prompt, "UNTRUSTED REJECTION DATA") {
+		t.Fatal("retry reasons are outside the untrusted boundary")
+	}
+}
+
+func TestJudgmentPromptRejectsOversizedRepositoryListAndReason(t *testing.T) {
+	request := JudgmentRequest{MaxInputBytes: 4096, RepositoryPaths: []string{strings.Repeat("/repo", 30000)}}
+	if _, err := boundedJudgmentPrompt(request, []byte(`{}`)); err == nil {
+		t.Fatal("oversized repository list was accepted")
+	}
+	request.RepositoryPaths = nil
+	request.RejectionReasons = []domain.JudgmentRejection{{Reason: strings.Repeat("x", 200000)}}
+	if _, err := boundedJudgmentPrompt(request, []byte(`{}`)); err == nil {
+		t.Fatal("oversized rejection reason was accepted")
+	}
+}
+
+func TestJudgmentPromptPreservesObservationBudget(t *testing.T) {
+	const limit = 4096
+	observation := []byte(`{"x":"` + strings.Repeat("a", limit-len(`{"x":""}`)-1) + `"}`)
+	if len(observation) != limit-1 {
+		t.Fatalf("fixture length=%d", len(observation))
+	}
+	if _, err := boundedJudgmentPrompt(JudgmentRequest{MaxInputBytes: limit}, observation); err != nil {
+		t.Fatalf("near-limit observation rejected: %v", err)
+	}
+}
+
+func (r *fakeRunner) Run(ctx context.Context, invocation adapters.Invocation) (adapters.Result, error) {
 	r.calls = append(r.calls, invocation)
+	deadline, _ := ctx.Deadline()
+	r.deadlines = append(r.deadlines, deadline)
+	for index, arg := range invocation.Args {
+		if arg == "--stdin-file" && index+1 < len(invocation.Args) {
+			input, _ := os.ReadFile(invocation.Args[index+1])
+			r.poolInputs = append(r.poolInputs, input)
+			break
+		}
+	}
 	if len(r.responses) == 0 {
+		if invocation.Name == "bb" {
+			return adapters.Result{Stderr: []byte(poolStartMarker + "\n")}, nil
+		}
 		return adapters.Result{}, nil
 	}
 	result := r.responses[0]
 	r.responses = r.responses[1:]
-	return result, nil
+	if len(r.errors) == 0 {
+		return result, nil
+	}
+	err := r.errors[0]
+	r.errors = r.errors[1:]
+	return result, err
 }
 
 func noOpJudgmentJSON() string {
@@ -170,6 +228,72 @@ func TestSafeEnvironmentRejectsUnusableTempDir(t *testing.T) {
 	}
 }
 
+func TestCodexErrorIncludesJSONEventWhenStderrEmpty(t *testing.T) {
+	runner := &fakeRunner{responses: []adapters.Result{{
+		Stdout:   []byte(`{"type":"error","message":"401 Unauthorized: Missing bearer"}` + "\n"),
+		ExitCode: 1,
+	}}}
+	backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
+	_, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
+	if err == nil || !strings.Contains(err.Error(), "401 Unauthorized: Missing bearer") {
+		t.Fatalf("error = %v, want JSON event diagnostic", err)
+	}
+}
+
+func TestCodexDefaultInputDirectorySharesLargePromptOutsidePrivateTmp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMPDIR", t.TempDir())
+	dir := filepath.Join(home, ".local", "state", "bb-account-pool", "exec-input")
+	prompt := bytes.Repeat([]byte("p"), 414*1024)
+	runner := &fakeRunner{}
+	_, transport, err := (Codex{Runner: runner}).run(context.Background(), []string{"exec", "-"}, prompt)
+	if err != nil || transport != CodexTransportPooled {
+		t.Fatalf("transport=%q err=%v", transport, err)
+	}
+	input := runner.calls[0].Args[3]
+	if filepath.Dir(input) != dir || !bytes.Equal(runner.poolInputs[0], prompt) {
+		t.Fatal("large prompt did not use the shared daemon input directory")
+	}
+	stat, err := os.Stat(dir)
+	if err != nil || stat.Mode().Perm() != 0o700 {
+		t.Fatalf("input directory permissions: %v, %v", stat, err)
+	}
+	if _, err := os.Stat(input); !os.IsNotExist(err) {
+		t.Fatalf("prompt not removed: %v", err)
+	}
+	for _, arg := range runner.calls[0].Args {
+		if len(arg) >= 128*1024 {
+			t.Fatal("prompt leaked into argv")
+		}
+	}
+}
+
+func TestPoolInputFileIsPrivateAndMatchesDefaultDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	input, err := writePoolInput("", []byte("prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(input) })
+	if filepath.Dir(input) != filepath.Join(home, ".local", "state", "bb-account-pool", "exec-input") {
+		t.Fatalf("unexpected input directory: %q", input)
+	}
+	stat, err := os.Stat(input)
+	if err != nil || stat.Mode().Perm() != 0o600 {
+		t.Fatalf("input file permissions: %v, %v", stat, err)
+	}
+}
+
+func TestCodexErrorDetailRedactsCredential(t *testing.T) {
+	result := adapters.Result{Stdout: []byte(`{"type":"error","message":"auth failed for sk-abcdefghijklmnopqrstuvwxyz123456"}` + "\n")}
+	detail := codexErrorDetail(result)
+	if strings.Contains(detail, "sk-abcdefghijklmnopqrstuvwxyz123456") || !strings.Contains(detail, "[REDACTED]") {
+		t.Fatalf("error detail did not redact credential: %q", detail)
+	}
+}
+
 func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 	dir := t.TempDir()
 	output := filepath.Join(dir, "judgment.json")
@@ -177,7 +301,7 @@ func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{}
-	backend := Codex{Binary: "codex", Model: "gpt-5.4", Runner: runner}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", PoolInputDir: dir, Runner: runner}
 	request := JudgmentRequest{
 		WorkingDir:    "/repo",
 		SchemaPath:    "/schemas/judgment.json",
@@ -193,16 +317,26 @@ func TestCodexJudgeIsReadOnlyAndSchemaDirected(t *testing.T) {
 	if judgment.NoOpReason == "" || meta.Backend != "codex" || meta.Model != "gpt-5.4" {
 		t.Fatalf("judgment/meta = %#v %#v", judgment, meta)
 	}
-	want := []string{
+	stdinPath := runner.calls[0].Args[3]
+	if filepath.Dir(stdinPath) != dir {
+		t.Fatalf("pool stdin dir = %q, want %q", filepath.Dir(stdinPath), dir)
+	}
+	want := append([]string{"pool", "exec", "--stdin-file", stdinPath, "--", "codex"}, []string{
 		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
 		"--sandbox=read-only", "--cd=/repo", "--model=gpt-5.4",
 		"--output-schema=/schemas/judgment.json", "--output-last-message=" + output,
 		"--color=never", "--json", "-",
+	}...)
+	if runner.calls[0].Name != "bb" {
+		t.Fatalf("binary = %q, want bb", runner.calls[0].Name)
 	}
 	if got := runner.calls[0].Args; !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
-	prompt := string(runner.calls[0].Stdin)
+	if _, err := os.Stat(stdinPath); !os.IsNotExist(err) {
+		t.Fatalf("pool stdin file was not removed: %v", err)
+	}
+	prompt := string(runner.poolInputs[0])
 	for _, required := range []string{
 		"UNTRUSTED CANONICAL DATA",
 		"one selected P4",
@@ -222,7 +356,7 @@ func TestCodexExecuteIsWorkspaceBoundAndDisablesToolNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{}
-	backend := Codex{Binary: "codex", Model: "gpt-5.4", Runner: runner}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", PoolInputDir: dir, Runner: runner}
 	report, _, err := backend.Execute(context.Background(), ExecutionRequest{
 		Worktree:   "/worktree",
 		SchemaPath: "/schemas/execution.json",
@@ -235,21 +369,186 @@ func TestCodexExecuteIsWorkspaceBoundAndDisablesToolNetwork(t *testing.T) {
 	if !report.Completed {
 		t.Fatal("execution report was not parsed")
 	}
-	want := []string{
+	stdinPath := runner.calls[0].Args[3]
+	want := append([]string{"pool", "exec", "--stdin-file", stdinPath, "--", "codex"}, []string{
 		"exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
 		"--sandbox=workspace-write", "--cd=/worktree", "--model=gpt-5.4",
-		"--config", `sandbox_workspace_write.network_access=false`,
-		"--config", `approval_policy="never"`,
 		"--output-schema=/schemas/execution.json", "--output-last-message=" + output,
 		"--color=never", "--json", "-",
-	}
+	}...)
 	if got := runner.calls[0].Args; !reflect.DeepEqual(got, want) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
-	prompt := string(runner.calls[0].Stdin)
+	prompt := string(runner.poolInputs[0])
 	for _, required := range []string{"NEVER push", "Allowed paths", "internal/roadmap", "immutable evidence contract"} {
 		if !strings.Contains(prompt, required) {
 			t.Fatalf("execution prompt missing %q: %s", required, prompt)
+		}
+	}
+}
+
+func TestCodexFallsBackDirectlyOnlyWhenPoolFailsBeforeStart(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "judgment.json")
+	if err := os.WriteFile(output, []byte(noOpJudgmentJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{
+		responses: []adapters.Result{
+			{ExitCode: 1, Stderr: []byte("Account Pooler cannot currently serve codex\n")},
+			{ExitCode: 0, Stderr: []byte("direct warning\n")},
+		},
+		errors: []error{errors.New("bb pool unavailable"), nil},
+	}
+	backend := Codex{Binary: "/opt/bin/codex", Model: "gpt-5.4", PoolInputDir: t.TempDir(), Runner: runner}
+
+	_, meta, err := backend.Judge(context.Background(), JudgmentRequest{
+		WorkingDir: "/repo", SchemaPath: "/schemas/judgment.json", OutputPath: output,
+		Observation: []byte(`{"beads":[]}`), MaxInputBytes: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Transport != "direct-fallback" {
+		t.Fatalf("transport = %q, want direct-fallback", meta.Transport)
+	}
+	if len(runner.calls) != 2 || runner.calls[0].Name != "bb" || runner.calls[1].Name != "/opt/bin/codex" {
+		t.Fatalf("calls = %#v, want pooled attempt then direct fallback", runner.calls)
+	}
+	if got := runner.calls[0].Args[5]; got != "codex" {
+		t.Fatalf("pooled command = %q, want host-resolved codex", got)
+	}
+	if !strings.Contains(string(meta.Stderr), "remontoire-codex: transport=direct-fallback") {
+		t.Fatalf("stderr does not record fallback transport: %s", meta.Stderr)
+	}
+}
+
+func TestCodexDoesNotRepeatAStartedOrIndeterminatePooledCall(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result adapters.Result
+		err    error
+	}{
+		{
+			name: "started child",
+			result: adapters.Result{ExitCode: 1, Stderr: []byte(
+				"bb-pool-exec: transport=pooled provider=codex\nchild failed\n",
+			)},
+			err: errors.New("pooled child failed"),
+		},
+		{name: "bounded output indeterminate", result: adapters.Result{ExitCode: 1}, err: adapters.ErrOutputLimit},
+		{
+			name:   "bb client signal death",
+			result: adapters.Result{ExitCode: -1},
+			err:    &adapters.CommandError{Name: "bb", ExitCode: -1, Cause: &exec.ExitError{}},
+		},
+		{
+			name:   "server output limit JSON on stdout",
+			result: adapters.Result{ExitCode: 1, Stdout: []byte(`{"ok":false,"error":{"code":"plugin_cli_output_too_large"}}`)},
+			err:    errors.New("bb exited 1"),
+		},
+		{name: "unknown transport failure", result: adapters.Result{ExitCode: 1}, err: errors.New("connection reset")},
+		{
+			name:   "unconfirmed dispatch before a connection-refused detail",
+			result: adapters.Result{ExitCode: 1, Stderr: []byte("bb-pool-exec: transport=pool-unconfirmed provider=codex\nconnection refused after dispatch\n")},
+			err:    errors.New("lost contact"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{responses: []adapters.Result{test.result}, errors: []error{test.err}}
+			backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
+			_, _, err := backend.Judge(context.Background(), JudgmentRequest{
+				WorkingDir: "/repo", SchemaPath: "/schema", OutputPath: filepath.Join(t.TempDir(), "missing.json"),
+				Observation: []byte(`{"beads":[]}`), MaxInputBytes: 4096,
+			})
+			if err == nil {
+				t.Fatal("started or indeterminate pool failure was accepted")
+			}
+			if len(runner.calls) != 1 {
+				t.Fatalf("calls = %d, want no direct replay", len(runner.calls))
+			}
+		})
+	}
+}
+
+func TestCodexFallsBackWhenBBExecutableIsMissingBeforeStart(t *testing.T) {
+	runner := &fakeRunner{
+		responses: []adapters.Result{{ExitCode: -1}, {ExitCode: 0}},
+		errors: []error{
+			&adapters.CommandError{Name: "bb", ExitCode: -1, Cause: &exec.Error{Name: "bb", Err: exec.ErrNotFound}},
+			nil,
+		},
+	}
+	backend := Codex{Binary: "/opt/bin/codex", PoolInputDir: t.TempDir(), Runner: runner}
+	_, transport, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transport != CodexTransportDirectFallback || len(runner.calls) != 2 {
+		t.Fatalf("transport/calls = %q/%d, want direct fallback after exec.Error", transport, len(runner.calls))
+	}
+}
+
+func TestCodexCapsPooledInvocationBelowServerRPCTimeout(t *testing.T) {
+	runner := &fakeRunner{}
+	backend := Codex{Binary: "codex", PoolInputDir: t.TempDir(), Runner: runner}
+	started := time.Now()
+	if _, _, err := backend.run(context.Background(), []string{"exec"}, []byte("prompt")); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.deadlines) != 1 || runner.deadlines[0].IsZero() {
+		t.Fatalf("pooled call deadline = %v, want bounded context", runner.deadlines)
+	}
+	want := started.Add(poolExecTimeout)
+	if delta := runner.deadlines[0].Sub(want); delta < -time.Second || delta > time.Second {
+		t.Fatalf("pooled deadline delta = %v, want approximately %v", delta, poolExecTimeout)
+	}
+	if poolExecTimeout >= 30*time.Minute {
+		t.Fatalf("pool timeout = %v, must stay below 30 minute RPC timeout", poolExecTimeout)
+	}
+}
+
+func TestCodexRequiresProviderPinConfirmation(t *testing.T) {
+	for _, result := range []adapters.Result{
+		{ExitCode: 0},
+		{ExitCode: 1, Stderr: []byte("bb-pool-exec: transport=pool-unconfirmed provider=codex\nAccount Pooler lost contact; the command may have started.\n")},
+	} {
+		runner := &fakeRunner{responses: []adapters.Result{result}}
+		_, transport, err := (Codex{PoolInputDir: t.TempDir(), Runner: runner}).run(context.Background(), []string{"exec"}, []byte("prompt"))
+		if err == nil || transport != "pool-unconfirmed" || len(runner.calls) != 1 {
+			t.Fatalf("unconfirmed execution: transport=%q err=%v calls=%d", transport, err, len(runner.calls))
+		}
+	}
+}
+
+func TestCodexDirectFallbackRetainsExecutionRestrictions(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "execution.json")
+	if err := os.WriteFile(output, []byte(executionReportJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{
+		{ExitCode: 1, Stderr: []byte("Account Pooler cannot currently serve codex\n")},
+		{ExitCode: 0},
+	}}
+	_, meta, err := (Codex{Runner: runner, PoolInputDir: dir}).Execute(context.Background(), ExecutionRequest{
+		Worktree: "/worktree", SchemaPath: "/schema", OutputPath: output, Contract: harnessContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.calls) != 2 || meta.Transport != "direct-fallback" {
+		t.Fatalf("calls/meta = %#v/%#v", runner.calls, meta)
+	}
+	for _, arg := range runner.calls[0].Args {
+		if strings.HasPrefix(arg, "-c") || strings.HasPrefix(arg, "--config") {
+			t.Fatalf("pooled caller config: %q", arg)
+		}
+	}
+	direct := strings.Join(runner.calls[1].Args, " ")
+	for _, setting := range []string{`--config sandbox_workspace_write.network_access=false`, `--config approval_policy="never"`} {
+		if !strings.Contains(direct, setting) {
+			t.Fatalf("direct policy missing %q: %s", setting, direct)
 		}
 	}
 }

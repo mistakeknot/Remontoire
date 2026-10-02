@@ -155,7 +155,8 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 	if cycle.Resolution == nil {
 		resolution := domain.ReviewResolution{
 			ReviewerVerdict: review.Verdict, FinalVerdict: review.Verdict,
-			ReviewerBackend: metadata.Backend, ReviewerModel: metadata.Model, ResolvedAt: s.now(),
+			ReviewerBackend: metadata.Backend, ReviewerModel: metadata.Model,
+			ReviewerTransport: metadata.Transport, ResolvedAt: s.now(),
 		}
 		if review.Verdict == domain.VerdictPromote {
 			if promoteErr := domain.ValidatePromotion(cycle.Candidate.Contract, *cycle.Measurement, review); promoteErr != nil {
