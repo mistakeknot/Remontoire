@@ -51,7 +51,7 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err
 	}
@@ -80,7 +80,7 @@ func (c Codex) Execute(ctx context.Context, request ExecutionRequest) (Execution
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return ExecutionReport{}, meta, err
 	}
@@ -110,7 +110,7 @@ func (c Codex) Review(ctx context.Context, request ReviewRequest) (domain.Review
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Review{}, meta, err
 	}
@@ -346,4 +346,63 @@ func codexTurns(transcript []byte) int {
 		}
 	}
 	return turns
+}
+
+// codexUsage sums the token counts Codex reports on each turn.completed event.
+// Codex reports no dollar cost, so CostUSD is always unknown. A token field is
+// known only if every completed turn reported it; an unreadable transcript, or
+// one with no completed turn, leaves everything unknown rather than zero.
+func codexUsage(transcript []byte) domain.Usage {
+	var total struct {
+		input, cached, output, reasoning *int64
+		missing                          [4]bool
+	}
+	completed := 0
+	scanner := bufio.NewScanner(bytes.NewReader(transcript))
+	scanner.Buffer(make([]byte, 64<<10), 8<<20)
+	for scanner.Scan() {
+		var event struct {
+			Type  string `json:"type"`
+			Usage *struct {
+				Input     *int64 `json:"input_tokens"`
+				Cached    *int64 `json:"cached_input_tokens"`
+				Output    *int64 `json:"output_tokens"`
+				Reasoning *int64 `json:"reasoning_output_tokens"`
+			} `json:"usage"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Type != "turn.completed" {
+			continue
+		}
+		completed++
+		reported := [4]*int64{}
+		if event.Usage != nil {
+			reported = [4]*int64{event.Usage.Input, event.Usage.Cached, event.Usage.Output, event.Usage.Reasoning}
+		}
+		sums := [4]**int64{&total.input, &total.cached, &total.output, &total.reasoning}
+		for i, value := range reported {
+			if value == nil || *value < 0 {
+				total.missing[i] = true
+				continue
+			}
+			if *sums[i] == nil {
+				*sums[i] = domain.Int64(0)
+			}
+			**sums[i] += *value
+		}
+	}
+	if completed == 0 || scanner.Err() != nil {
+		return domain.Usage{}
+	}
+	pick := func(i int, v *int64) *int64 {
+		if total.missing[i] {
+			return nil
+		}
+		return v
+	}
+	return domain.Usage{
+		InputTokens:           pick(0, total.input),
+		CachedInputTokens:     pick(1, total.cached),
+		OutputTokens:          pick(2, total.output),
+		ReasoningOutputTokens: pick(3, total.reasoning),
+	}
 }

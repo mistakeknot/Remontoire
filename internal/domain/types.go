@@ -135,12 +135,12 @@ type JudgmentRetry struct {
 }
 
 type JudgmentAttempt struct {
-	Number      int       `json:"number"`
-	Backend     string    `json:"backend,omitempty"`
-	Model       string    `json:"model,omitempty"`
-	Transport   string    `json:"transport,omitempty"`
-	Turns       int       `json:"turns,omitempty"`
-	CostUSD     float64   `json:"cost_usd,omitempty"`
+	Number    int    `json:"number"`
+	Backend   string `json:"backend,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Transport string `json:"transport,omitempty"`
+	Turns     int    `json:"turns,omitempty"`
+	Usage
 	Artifact    Artifact  `json:"artifact,omitempty"`
 	RawArtifact *Artifact `json:"raw_artifact,omitempty"`
 }
@@ -181,7 +181,7 @@ type ExecutionRecord struct {
 	CompletedAt  time.Time `json:"completed_at,omitempty"`
 	ChangedPaths []string  `json:"changed_paths,omitempty"`
 	Turns        int       `json:"turns,omitempty"`
-	CostUSD      float64   `json:"cost_usd,omitempty"`
+	Usage
 }
 
 type Review struct {

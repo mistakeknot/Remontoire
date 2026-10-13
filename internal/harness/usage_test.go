@@ -1,0 +1,177 @@
+package harness
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/mistakeknot/Remontoire/internal/adapters"
+	"github.com/mistakeknot/Remontoire/internal/domain"
+)
+
+// testdata/codex holds one real Codex executor run (cycle of 2026-07-13) with
+// message text, command output, paths and the thread ID redacted; see
+// testdata/codex/README.md. The token counts are the ones Codex reported.
+func codexFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "codex", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func wantTokens(t *testing.T, usage domain.Usage, input, cached, output, reasoning *int64) {
+	t.Helper()
+	for name, pair := range map[string][2]*int64{
+		"input": {usage.InputTokens, input}, "cached": {usage.CachedInputTokens, cached},
+		"output": {usage.OutputTokens, output}, "reasoning": {usage.ReasoningOutputTokens, reasoning},
+	} {
+		got, want := pair[0], pair[1]
+		if (got == nil) != (want == nil) || (got != nil && *got != *want) {
+			t.Errorf("%s tokens = %v, want %v", name, deref(got), deref(want))
+		}
+	}
+}
+
+func deref(v *int64) any {
+	if v == nil {
+		return "unknown"
+	}
+	return *v
+}
+
+func TestCodexUsageFromRedactedTranscript(t *testing.T) {
+	usage := codexUsage(codexFixture(t, "executor.jsonl"))
+	wantTokens(t, usage, domain.Int64(202151), domain.Int64(153088), domain.Int64(1779), domain.Int64(470))
+	if usage.CostUSD != nil {
+		t.Fatalf("Codex reports no dollar cost, got %v", *usage.CostUSD)
+	}
+}
+
+func TestCodexUsageSumsTurnsAndKeepsMissingFieldsUnknown(t *testing.T) {
+	two := `{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}
+`
+	usage := codexUsage([]byte(two))
+	wantTokens(t, usage, domain.Int64(15), nil, domain.Int64(5), nil)
+
+	zero := `{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}`
+	wantTokens(t, codexUsage([]byte(zero)), domain.Int64(0), domain.Int64(0), domain.Int64(0), domain.Int64(0))
+}
+
+func TestCodexUsageIsUnknownWithoutAUsableCompletedTurn(t *testing.T) {
+	for name, transcript := range map[string]string{
+		"empty":               "",
+		"started only":        `{"type":"turn.started"}` + "\n",
+		"completed no usage":  `{"type":"turn.completed"}` + "\n",
+		"negative count":      `{"type":"turn.completed","usage":{"input_tokens":-1}}` + "\n",
+		"unterminated stream": `{"type":"turn.started"}` + "\n" + `{"type":"item.completed","item":{"id":"x"`,
+	} {
+		if usage := codexUsage([]byte(transcript)); usage != (domain.Usage{}) {
+			t.Errorf("%s: usage = %+v, want all unknown", name, usage)
+		}
+	}
+	long := `{"type":"item.completed","item":{"aggregated_output":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n" +
+		`{"type":"turn.completed","usage":{"input_tokens":7}}` + "\n"
+	if usage := codexUsage([]byte(long)); usage != (domain.Usage{}) {
+		t.Errorf("oversized line: usage = %+v, want all unknown", usage)
+	}
+}
+
+func TestCodexExecuteReportsTokensAndUnknownCost(t *testing.T) {
+	dir := t.TempDir()
+	output := filepath.Join(dir, "execution.json")
+	if err := os.WriteFile(output, []byte(executionReportJSON()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: codexFixture(t, "executor.jsonl"), Stderr: []byte(poolStartMarker + "\n")}}}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", PoolInputDir: dir, Runner: runner}
+	_, meta, err := backend.Execute(context.Background(), ExecutionRequest{
+		Worktree: "/worktree", SchemaPath: "/schemas/execution.json", OutputPath: output, Contract: harnessContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTokens(t, meta.Usage, domain.Int64(202151), domain.Int64(153088), domain.Int64(1779), domain.Int64(470))
+	if meta.CostUSD != nil {
+		t.Fatalf("cost = %v, want unknown", *meta.CostUSD)
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "cost_usd") {
+		t.Fatalf("unknown cost serialized: %s", encoded)
+	}
+}
+
+func TestAttemptRecordKeepsUnknownCostUnknown(t *testing.T) {
+	// The record Remontoire wrote before usage was tracked: no cost, no tokens.
+	var record domain.ExecutionRecord
+	if err := json.Unmarshal(codexFixture(t, "attempt-record.json"), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.Usage != (domain.Usage{}) || record.Turns != 1 {
+		t.Fatalf("legacy record: turns=%d usage=%+v, want 1 turn and unknown usage", record.Turns, record.Usage)
+	}
+	legacy, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"cost_usd", "input_tokens", "output_tokens"} {
+		if strings.Contains(string(legacy), key) {
+			t.Fatalf("unknown %s serialized as a value: %s", key, legacy)
+		}
+	}
+
+	record.Usage = codexUsage(codexFixture(t, "executor.jsonl"))
+	filled, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var round domain.ExecutionRecord
+	if err := json.Unmarshal(filled, &round); err != nil {
+		t.Fatal(err)
+	}
+	wantTokens(t, round.Usage, domain.Int64(202151), domain.Int64(153088), domain.Int64(1779), domain.Int64(470))
+	if strings.Contains(string(filled), "cost_usd") || round.CostUSD != nil {
+		t.Fatalf("cost invented on round trip: %s", filled)
+	}
+
+	record.CostUSD = domain.Float(0)
+	reported, _ := json.Marshal(record)
+	if !strings.Contains(string(reported), `"cost_usd":0`) {
+		t.Fatalf("a reported zero cost must survive serialization: %s", reported)
+	}
+}
+
+func TestClaudeCostMissingIsUnknownAndZeroIsKnown(t *testing.T) {
+	var target domain.Review
+	_, cost, _ := decodeClaudeWithUsage([]byte(`{"is_error":true}`), &target)
+	if cost != nil {
+		t.Fatalf("missing total_cost_usd parsed as %v, want unknown", *cost)
+	}
+	_, cost, _ = decodeClaudeWithUsage([]byte(`{"is_error":true,"total_cost_usd":0}`), &target)
+	if cost == nil || *cost != 0 {
+		t.Fatalf("reported zero cost = %v, want known zero", cost)
+	}
+	_, cost, _ = decodeClaudeWithUsage([]byte(`not json`), &target)
+	if cost != nil {
+		t.Fatal("undecodable envelope must leave cost unknown")
+	}
+}
+
+func TestUsageCombineNeverTurnsUnknownIntoASmallerTotal(t *testing.T) {
+	known := domain.Usage{CostUSD: domain.Float(0.25), InputTokens: domain.Int64(3)}
+	got := known.Combine(domain.Usage{CostUSD: domain.Float(0.5), InputTokens: domain.Int64(4)})
+	if got.CostUSD == nil || *got.CostUSD != 0.75 || got.InputTokens == nil || *got.InputTokens != 7 {
+		t.Fatalf("combined known usage = %+v", got)
+	}
+	if got := known.Combine(domain.Usage{}); got != (domain.Usage{}) {
+		t.Fatalf("known + unknown = %+v, want unknown", got)
+	}
+}

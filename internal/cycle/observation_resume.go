@@ -323,7 +323,7 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle *domain.Cycle, ob
 		})
 		transport = metadata.Transport
 		cycle.JudgmentTransport = transport
-		cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 1, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, CostUSD: metadata.CostUSD})
+		cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 1, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, Usage: metadata.Usage})
 		if err != nil {
 			return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment: %w", err)
 		}
@@ -373,7 +373,7 @@ func (s *Service) loadOrRunJudgment(ctx context.Context, cycle *domain.Cycle, ob
 			})
 			transport = metadata.Transport
 			cycle.JudgmentTransport = transport
-			cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 2, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, CostUSD: metadata.CostUSD})
+			cycle.JudgmentAttempts = append(cycle.JudgmentAttempts, domain.JudgmentAttempt{Number: 2, Backend: metadata.Backend, Model: metadata.Model, Transport: metadata.Transport, Turns: metadata.Turns, Usage: metadata.Usage})
 			if retryErr != nil {
 				cycle.JudgmentRetry.Outcome, cycle.JudgmentRetry.Error = "backend_error", retryErr.Error()
 				return domain.Judgment{}, domain.Artifact{}, transport, fmt.Errorf("portfolio judgment corrective retry: %w", retryErr)

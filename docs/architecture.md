@@ -137,6 +137,11 @@ Every proposed experiment includes:
 - promotion and closure criteria;
 - expected artifact paths.
 
+Backends report usage as measured cost and token counts. A value a backend does
+not report is recorded as unknown (omitted from the record), never as zero:
+Codex reports tokens but no dollar cost, so its cost stays unknown, and the cost
+budget is enforced only when a cost was reported.
+
 The contract is immutable once approved. A changed contract requires a new
 proposal and approval.
 
