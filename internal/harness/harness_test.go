@@ -626,7 +626,7 @@ func TestClaudeExecuteAllowsOnlyNarrowBenchmarkShell(t *testing.T) {
 	if !report.Completed {
 		t.Fatal("execution report was not parsed")
 	}
-	if meta.Turns != 4 || meta.CostUSD != 0.42 {
+	if meta.Turns != 4 || meta.CostUSD == nil || *meta.CostUSD != 0.42 {
 		t.Fatalf("usage metadata = %#v", meta)
 	}
 	args := runner.calls[0].Args
@@ -751,7 +751,7 @@ func TestClaudeReviewRepairsInvalidSchemaOnceWithinRemainingBudget(t *testing.T)
 	if prompt := string(runner.calls[1].Stdin); !strings.Contains(prompt, "previous response failed deterministic schema validation") {
 		t.Fatalf("repair prompt does not explain the retry boundary: %s", prompt)
 	}
-	if meta.Turns != 2 || meta.CostUSD != 0.5 {
+	if meta.Turns != 2 || meta.CostUSD == nil || *meta.CostUSD != 0.5 {
 		t.Fatalf("usage metadata = %#v", meta)
 	}
 	if !bytes.Contains(meta.Transcript, invalidEnvelope) || !bytes.Contains(meta.Transcript, validEnvelope) {

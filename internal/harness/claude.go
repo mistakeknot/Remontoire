@@ -112,14 +112,14 @@ func (c Claude) Review(ctx context.Context, request ReviewRequest) (domain.Revie
 		maxBudget = 1
 	}
 	review, meta, retryable, reviewErr := c.reviewAttempt(ctx, request, schema, prompt, maxBudget)
-	if reviewErr == nil || !retryable || meta.CostUSD <= 0 || meta.CostUSD >= maxBudget {
+	if reviewErr == nil || !retryable || meta.CostUSD == nil || *meta.CostUSD <= 0 || *meta.CostUSD >= maxBudget {
 		return review, meta, reviewErr
 	}
 
 	repairPrompt := prompt + `
 
 The previous response failed deterministic schema validation. Retry once from the same evidence package. Return only the exact five-field object shown above; do not reuse an invalid shape.`
-	repaired, repairMeta, _, repairErr := c.reviewAttempt(ctx, request, schema, repairPrompt, maxBudget-meta.CostUSD)
+	repaired, repairMeta, _, repairErr := c.reviewAttempt(ctx, request, schema, repairPrompt, maxBudget-*meta.CostUSD)
 	meta = combineMetadata(meta, repairMeta)
 	if repairErr != nil {
 		return domain.Review{}, meta, fmt.Errorf("claude review repair failed after %v: %w", reviewErr, repairErr)
@@ -148,7 +148,7 @@ func (c Claude) reviewAttempt(ctx context.Context, request ReviewRequest, schema
 
 func combineMetadata(first, second Metadata) Metadata {
 	first.Turns += second.Turns
-	first.CostUSD += second.CostUSD
+	first.Usage = first.Usage.Combine(second.Usage)
 	first.Transcript = appendAttempt(first.Transcript, second.Transcript)
 	first.Stderr = appendAttempt(first.Stderr, second.Stderr)
 	return first
@@ -252,20 +252,24 @@ func decodeClaude(stdout []byte, target any) error {
 	return err
 }
 
-func decodeClaudeWithUsage(stdout []byte, target any) (int, float64, error) {
+func decodeClaudeWithUsage(stdout []byte, target any) (int, *float64, error) {
+	if err := strictjson.RejectDuplicateKeys(stdout); err != nil {
+		return 0, nil, fmt.Errorf("decode result envelope: %w", err)
+	}
 	var envelope struct {
 		StructuredOutput json.RawMessage `json:"structured_output"`
 		Result           string          `json:"result"`
 		IsError          bool            `json:"is_error"`
 		Subtype          string          `json:"subtype"`
 		NumTurns         int             `json:"num_turns"`
-		TotalCostUSD     float64         `json:"total_cost_usd"`
+		TotalCostUSD     *float64        `json:"total_cost_usd"`
 	}
 	if err := json.Unmarshal(stdout, &envelope); err != nil {
-		return 0, 0, fmt.Errorf("decode result envelope: %w", err)
+		return 0, nil, fmt.Errorf("decode result envelope: %w", err)
 	}
+	cost := domain.KnownCost(envelope.TotalCostUSD)
 	if envelope.IsError || strings.Contains(envelope.Subtype, "error") {
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("claude returned an error result")
+		return envelope.NumTurns, cost, fmt.Errorf("claude returned an error result")
 	}
 	payload := envelope.StructuredOutput
 	if len(payload) == 0 && envelope.Result != "" {
@@ -275,26 +279,26 @@ func decodeClaudeWithUsage(stdout []byte, target any) (int, float64, error) {
 		}
 	}
 	if len(payload) == 0 {
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("claude result has no structured_output")
+		return envelope.NumTurns, cost, fmt.Errorf("claude result has no structured_output")
 	}
 	if err := strictjson.RejectDuplicateKeys(payload); err != nil {
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+		return envelope.NumTurns, cost, fmt.Errorf("decode structured_output: %w", err)
 	}
 	if err := strictjson.RejectNonExactFields(payload, target); err != nil {
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+		return envelope.NumTurns, cost, fmt.Errorf("decode structured_output: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+		return envelope.NumTurns, cost, fmt.Errorf("decode structured_output: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
 			err = fmt.Errorf("multiple JSON values")
 		}
-		return envelope.NumTurns, envelope.TotalCostUSD, fmt.Errorf("decode structured_output: %w", err)
+		return envelope.NumTurns, cost, fmt.Errorf("decode structured_output: %w", err)
 	}
-	return envelope.NumTurns, envelope.TotalCostUSD, nil
+	return envelope.NumTurns, cost, nil
 }
 
 func loneJSONFence(result string) (json.RawMessage, bool) {

@@ -1,0 +1,11 @@
+{
+  "backend": "codex",
+  "worktree_path": "/home/REDACTED/projects/.worktrees/remontoire/cycle-REDACTED",
+  "base_commit": "0000000000000000000000000000000000000000",
+  "started_at": "2026-07-13T15:38:41.025881057Z",
+  "completed_at": "2026-07-13T15:39:31.929128451Z",
+  "changed_paths": [
+    "internal/canary/remontoire_v01_review_repair_canary_test.go"
+  ],
+  "turns": 1
+}

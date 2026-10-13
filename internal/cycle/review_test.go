@@ -22,7 +22,7 @@ type dynamicReviewer struct {
 
 func (r *dynamicReviewer) Review(_ context.Context, request harness.ReviewRequest) (domain.Review, harness.Metadata, error) {
 	r.calls++
-	return r.call(request), harness.Metadata{Backend: "claude", Model: "review-fixture", Transport: "pooled", Turns: 2, CostUSD: 0.1}, nil
+	return r.call(request), harness.Metadata{Backend: "claude", Model: "review-fixture", Transport: "pooled", Turns: 2, Usage: domain.Usage{CostUSD: domain.Float(0.1)}}, nil
 }
 
 type failingReviewer struct {

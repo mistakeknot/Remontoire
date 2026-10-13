@@ -2,6 +2,7 @@ package cycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -421,5 +422,105 @@ func TestStdoutJSONMetricExtraction(t *testing.T) {
 	}
 	if _, err := ExtractMetric(metric, []byte(`{"metrics":{"other":1}}`), 0); err == nil {
 		t.Fatal("missing JSON field was accepted")
+	}
+}
+
+func TestExecutionRecordsAndResumeKeepUnknownUsageUnknown(t *testing.T) {
+	service, kernel, _, executor, _, _ := executionService(t)
+	executor.meta.Usage = domain.Usage{InputTokens: domain.Int64(9)}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	cycle, err = service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(stage string, usage domain.Usage) {
+		t.Helper()
+		if usage.CostUSD != nil || usage.InputTokens == nil || *usage.InputTokens != 9 || usage.OutputTokens != nil {
+			t.Fatalf("%s: usage = %+v, want cost unknown, 9 input tokens, output unknown", stage, usage)
+		}
+	}
+	check("after execute", cycle.Execution.Usage)
+	cycle.Stage = domain.StageExecuting
+	kernel.cycles[cycle.ID] = cycle
+	resumed, err := service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("after resume", resumed.Execution.Usage)
+}
+
+func TestExecutionBudgetRejectsAKnownCostButNotAnUnknownOne(t *testing.T) {
+	service, _, _, executor, _, benchmark := executionService(t)
+	executor.meta.Usage = domain.Usage{CostUSD: domain.Float(1e6)}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := service.Execute(context.Background(), cycle.ID)
+	if err == nil || !strings.Contains(err.Error(), "cost") || failed.Stage != domain.StageFailed || benchmark.calls != 0 {
+		t.Fatalf("known over-budget cost: err=%v stage=%s benchmark=%d", err, failed.Stage, benchmark.calls)
+	}
+}
+
+func TestRecoveredStartedAttemptRestoresRecordedUsage(t *testing.T) {
+	for name, tc := range map[string]struct {
+		usage   domain.Usage
+		wantErr string
+	}{
+		"unknown cost stays unknown":                                  {usage: domain.Usage{InputTokens: domain.Int64(9)}},
+		"negative recorded cost is unknown, not over or under budget": {usage: domain.Usage{CostUSD: domain.Float(-0.25), InputTokens: domain.Int64(9)}},
+		"known cost over budget":                                      {usage: domain.Usage{CostUSD: domain.Float(1e6)}, wantErr: "cost"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service, kernel, _, executor, worktrees, _ := executionService(t)
+			cycle, err := service.Start(context.Background(), domain.ModeProposal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cycle, err = service.Approve(context.Background(), cycle.ID, "mk")
+			if err != nil {
+				t.Fatal(err)
+			}
+			outputPath, err := service.Store.Path(cycle.ID, "execution-report.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			report, _ := json.Marshal(executor.report)
+			if err := os.WriteFile(outputPath, report, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cycle.Stage = domain.StageExecuting
+			cycle.Execution = &domain.ExecutionRecord{Backend: "codex", WorktreePath: worktrees.info.Path, BaseCommit: worktrees.info.BaseCommit, Turns: 1, Usage: tc.usage}
+			cycle.IdempotencyKeys["execution:attempt"] = "started"
+			cycle.IdempotencyKeys["run:execute"] = "completed"
+			kernel.phase = "execute"
+			kernel.cycles[cycle.ID] = cycle
+
+			got, err := service.Execute(context.Background(), cycle.ID)
+			if executor.calls != 0 {
+				t.Fatal("recovery re-invoked the executor")
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Execution.Usage.CostUSD != nil || got.Execution.Usage.InputTokens == nil || *got.Execution.Usage.InputTokens != 9 {
+				t.Fatalf("recovered usage = %+v, want cost unknown and 9 input tokens", got.Execution.Usage)
+			}
+		})
 	}
 }

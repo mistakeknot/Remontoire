@@ -197,7 +197,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 			return cycle, hashErr
 		}
 		cycle.Artifacts = append(cycle.Artifacts, reportArtifact)
-		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Transport: cycle.Execution.Transport, Turns: cycle.Execution.Turns, CostUSD: cycle.Execution.CostUSD}
+		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Transport: cycle.Execution.Transport, Turns: cycle.Execution.Turns, Usage: cycle.Execution.Usage.Normalize()}
 	} else if invokeExecution {
 		executionCtx, cancel := context.WithTimeout(ctx, time.Duration(cycle.Candidate.Contract.Budget.MaxDurationSeconds)*time.Second)
 		report, metadata, err = executor.Execute(executionCtx, harness.ExecutionRequest{
@@ -217,8 +217,10 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	if !executionCompleteAtStart && metadata.Turns > cycle.Candidate.Contract.Budget.MaxTurns {
 		return cycle, s.fail(ctx, &cycle, fmt.Errorf("executor used %d turns, budget is %d", metadata.Turns, cycle.Candidate.Contract.Budget.MaxTurns))
 	}
-	if !executionCompleteAtStart && metadata.CostUSD > cycle.Candidate.Contract.Budget.MaxCostUSD {
-		return cycle, s.fail(ctx, &cycle, fmt.Errorf("executor cost %.2f exceeds budget %.2f", metadata.CostUSD, cycle.Candidate.Contract.Budget.MaxCostUSD))
+	// An unreported cost cannot be checked against the budget; it is recorded
+	// as unknown, not as zero.
+	if !executionCompleteAtStart && metadata.CostUSD != nil && *metadata.CostUSD > cycle.Candidate.Contract.Budget.MaxCostUSD {
+		return cycle, s.fail(ctx, &cycle, fmt.Errorf("executor cost %.2f exceeds budget %.2f", *metadata.CostUSD, cycle.Candidate.Contract.Budget.MaxCostUSD))
 	}
 	if cycle.Execution == nil {
 		return cycle, s.fail(ctx, &cycle, fmt.Errorf("execution record is missing"))
@@ -261,7 +263,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 		cycle.Execution.Model = metadata.Model
 		cycle.Execution.Transport = metadata.Transport
 		cycle.Execution.Turns = metadata.Turns
-		cycle.Execution.CostUSD = metadata.CostUSD
+		cycle.Execution.Usage = metadata.Usage.Normalize()
 		cycle.Execution.ChangedPaths = changed
 		cycle.Execution.CompletedAt = s.now()
 		cycle.IdempotencyKeys["execution:attempt"] = "completed"
