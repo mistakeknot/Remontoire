@@ -423,3 +423,49 @@ func TestStdoutJSONMetricExtraction(t *testing.T) {
 		t.Fatal("missing JSON field was accepted")
 	}
 }
+
+func TestExecutionRecordsAndResumeKeepUnknownUsageUnknown(t *testing.T) {
+	service, kernel, _, executor, _, _ := executionService(t)
+	executor.meta.Usage = domain.Usage{InputTokens: domain.Int64(9)}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	cycle, err = service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(stage string, usage domain.Usage) {
+		t.Helper()
+		if usage.CostUSD != nil || usage.InputTokens == nil || *usage.InputTokens != 9 || usage.OutputTokens != nil {
+			t.Fatalf("%s: usage = %+v, want cost unknown, 9 input tokens, output unknown", stage, usage)
+		}
+	}
+	check("after execute", cycle.Execution.Usage)
+	cycle.Stage = domain.StageExecuting
+	kernel.cycles[cycle.ID] = cycle
+	resumed, err := service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("after resume", resumed.Execution.Usage)
+}
+
+func TestExecutionBudgetRejectsAKnownCostButNotAnUnknownOne(t *testing.T) {
+	service, _, _, executor, _, benchmark := executionService(t)
+	executor.meta.Usage = domain.Usage{CostUSD: domain.Float(1e6)}
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := service.Execute(context.Background(), cycle.ID)
+	if err == nil || !strings.Contains(err.Error(), "cost") || failed.Stage != domain.StageFailed || benchmark.calls != 0 {
+		t.Fatalf("known over-budget cost: err=%v stage=%s benchmark=%d", err, failed.Stage, benchmark.calls)
+	}
+}

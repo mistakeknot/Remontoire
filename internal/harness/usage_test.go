@@ -3,6 +3,8 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +81,46 @@ func TestCodexUsageIsUnknownWithoutAUsableCompletedTurn(t *testing.T) {
 		`{"type":"turn.completed","usage":{"input_tokens":7}}` + "\n"
 	if usage := codexUsage([]byte(long)); usage != (domain.Usage{}) {
 		t.Errorf("oversized line: usage = %+v, want all unknown", usage)
+	}
+}
+
+func TestCodexUsageUnreadableCompletionAfterValidTurnIsUnknown(t *testing.T) {
+	valid := `{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}` + "\n"
+	for name, tail := range map[string]string{
+		"truncated completion": `{"type":"turn.completed","usage":{"input_tokens":4`,
+		"garbled completion":   `{"type":"turn.completed","usage":`,
+	} {
+		if usage := codexUsage([]byte(valid + tail)); usage != (domain.Usage{}) {
+			t.Errorf("%s: usage = %+v, want all unknown", name, usage)
+		}
+	}
+	// A bad field poisons only that field; the others stay known.
+	for name, bad := range map[string]string{"string": `"bad"`, "fraction": `1.5`, "negative": `-3`, "null": `null`} {
+		usage := codexUsage([]byte(valid + `{"type":"turn.completed","usage":{"input_tokens":` + bad + `,"output_tokens":2}}` + "\n"))
+		wantTokens(t, usage, nil, nil, domain.Int64(3), nil)
+		if t.Failed() {
+			t.Fatalf("%s input_tokens", name)
+		}
+	}
+	oversized := `{"type":"item.completed","item":{"aggregated_output":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n"
+	if usage := codexUsage([]byte(valid + oversized)); usage != (domain.Usage{}) {
+		t.Errorf("valid turn then oversized line: usage = %+v, want all unknown", usage)
+	}
+}
+
+func TestTokenSumsDetectOverflow(t *testing.T) {
+	max := int64(math.MaxInt64)
+	line := func(n int64) string {
+		return fmt.Sprintf(`{"type":"turn.completed","usage":{"input_tokens":%d,"output_tokens":1}}`+"\n", n)
+	}
+	usage := codexUsage([]byte(line(max) + line(max) + line(2)))
+	wantTokens(t, usage, nil, nil, domain.Int64(3), nil)
+	usage = codexUsage([]byte(line(max-1) + line(1)))
+	wantTokens(t, usage, domain.Int64(max), nil, domain.Int64(2), nil)
+
+	a, b := domain.Usage{InputTokens: domain.Int64(max)}, domain.Usage{InputTokens: domain.Int64(2)}
+	if got := a.Combine(b); got.InputTokens != nil {
+		t.Fatalf("overflowing Combine = %d, want unknown", *got.InputTokens)
 	}
 }
 

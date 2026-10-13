@@ -1,5 +1,7 @@
 package domain
 
+import "math"
+
 // Usage is measured spend for one backend call. A nil field is unknown: the
 // backend did not report it. Unknown is never zero, and a zero pointer means
 // the backend reported zero.
@@ -33,6 +35,9 @@ func sumFloat(a, b *float64) *float64 {
 
 func sumInt(a, b *int64) *int64 {
 	if a == nil || b == nil {
+		return nil
+	}
+	if *a < 0 || *b < 0 || *a > math.MaxInt64-*b {
 		return nil
 	}
 	v := *a + *b

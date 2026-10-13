@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -350,59 +351,51 @@ func codexTurns(transcript []byte) int {
 
 // codexUsage sums the token counts Codex reports on each turn.completed event.
 // Codex reports no dollar cost, so CostUSD is always unknown. A token field is
-// known only if every completed turn reported it; an unreadable transcript, or
-// one with no completed turn, leaves everything unknown rather than zero.
+// known only if every completed turn reported it as a non-negative integer and
+// the sum did not overflow. A completion event that cannot be read, an
+// unreadable stream, or a transcript with no completed turn leaves everything
+// unknown rather than a smaller total or zero.
 func codexUsage(transcript []byte) domain.Usage {
-	var total struct {
-		input, cached, output, reasoning *int64
-		missing                          [4]bool
-	}
+	names := [4]string{"input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"}
+	var sums [4]int64
+	var missing [4]bool
 	completed := 0
 	scanner := bufio.NewScanner(bytes.NewReader(transcript))
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
+		line := scanner.Bytes()
 		var event struct {
-			Type  string `json:"type"`
-			Usage *struct {
-				Input     *int64 `json:"input_tokens"`
-				Cached    *int64 `json:"cached_input_tokens"`
-				Output    *int64 `json:"output_tokens"`
-				Reasoning *int64 `json:"reasoning_output_tokens"`
-			} `json:"usage"`
+			Type  string                     `json:"type"`
+			Usage map[string]json.RawMessage `json:"usage"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &event) != nil || event.Type != "turn.completed" {
+		if err := json.Unmarshal(line, &event); err != nil {
+			if bytes.Contains(line, []byte("turn.completed")) {
+				return domain.Usage{}
+			}
+			continue
+		}
+		if event.Type != "turn.completed" {
 			continue
 		}
 		completed++
-		reported := [4]*int64{}
-		if event.Usage != nil {
-			reported = [4]*int64{event.Usage.Input, event.Usage.Cached, event.Usage.Output, event.Usage.Reasoning}
-		}
-		sums := [4]**int64{&total.input, &total.cached, &total.output, &total.reasoning}
-		for i, value := range reported {
-			if value == nil || *value < 0 {
-				total.missing[i] = true
+		for i, name := range names {
+			var value int64
+			raw := bytes.TrimSpace(event.Usage[name])
+			if string(raw) == "null" || json.Unmarshal(raw, &value) != nil || value < 0 || sums[i] > math.MaxInt64-value {
+				missing[i] = true
 				continue
 			}
-			if *sums[i] == nil {
-				*sums[i] = domain.Int64(0)
-			}
-			**sums[i] += *value
+			sums[i] += value
 		}
 	}
 	if completed == 0 || scanner.Err() != nil {
 		return domain.Usage{}
 	}
-	pick := func(i int, v *int64) *int64 {
-		if total.missing[i] {
-			return nil
+	var fields [4]*int64
+	for i := range fields {
+		if !missing[i] {
+			fields[i] = domain.Int64(sums[i])
 		}
-		return v
 	}
-	return domain.Usage{
-		InputTokens:           pick(0, total.input),
-		CachedInputTokens:     pick(1, total.cached),
-		OutputTokens:          pick(2, total.output),
-		ReasoningOutputTokens: pick(3, total.reasoning),
-	}
+	return domain.Usage{InputTokens: fields[0], CachedInputTokens: fields[1], OutputTokens: fields[2], ReasoningOutputTokens: fields[3]}
 }
