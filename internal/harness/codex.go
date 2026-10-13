@@ -350,45 +350,50 @@ func codexTurns(transcript []byte) int {
 }
 
 // codexUsage sums the token counts Codex reports on each turn.completed event.
-// Codex reports no dollar cost, so CostUSD is always unknown. A token field is
-// known only if every completed turn reported it as a non-negative integer and
-// the sum did not overflow. A completion event that cannot be read, an
-// unreadable stream, or a transcript with no completed turn leaves everything
-// unknown rather than a smaller total or zero.
+// Codex reports no dollar cost, so CostUSD is always unknown. Usage is known
+// only for a stream that is complete: every line is a JSON event, every
+// turn.started has a turn.completed, and no turn failed, because anything else
+// may hide spend. A token field is known only if every completed turn reported
+// it as a non-negative integer and the sum did not overflow. Otherwise the
+// value is unknown, never zero or a smaller total.
 func codexUsage(transcript []byte) domain.Usage {
 	names := [4]string{"input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"}
 	var sums [4]int64
 	var missing [4]bool
-	completed := 0
+	started, completed := 0, 0
 	scanner := bufio.NewScanner(bytes.NewReader(transcript))
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
-		line := scanner.Bytes()
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
 		var event struct {
 			Type  string                     `json:"type"`
 			Usage map[string]json.RawMessage `json:"usage"`
 		}
-		if err := json.Unmarshal(line, &event); err != nil {
-			if bytes.Contains(line, []byte("turn.completed")) {
-				return domain.Usage{}
-			}
-			continue
+		if json.Unmarshal(line, &event) != nil {
+			return domain.Usage{}
 		}
-		if event.Type != "turn.completed" {
-			continue
-		}
-		completed++
-		for i, name := range names {
-			var value int64
-			raw := bytes.TrimSpace(event.Usage[name])
-			if string(raw) == "null" || json.Unmarshal(raw, &value) != nil || value < 0 || sums[i] > math.MaxInt64-value {
-				missing[i] = true
-				continue
+		switch event.Type {
+		case "turn.started":
+			started++
+		case "turn.failed":
+			return domain.Usage{}
+		case "turn.completed":
+			completed++
+			for i, name := range names {
+				var value int64
+				raw := bytes.TrimSpace(event.Usage[name])
+				if string(raw) == "null" || json.Unmarshal(raw, &value) != nil || value < 0 || sums[i] > math.MaxInt64-value {
+					missing[i] = true
+					continue
+				}
+				sums[i] += value
 			}
-			sums[i] += value
 		}
 	}
-	if completed == 0 || scanner.Err() != nil {
+	if completed == 0 || completed != started || scanner.Err() != nil {
 		return domain.Usage{}
 	}
 	var fields [4]*int64

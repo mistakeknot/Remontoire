@@ -26,11 +26,28 @@ func (u Usage) Combine(other Usage) Usage {
 }
 
 func sumFloat(a, b *float64) *float64 {
-	if a == nil || b == nil {
+	if !ValidCost(a) || !ValidCost(b) {
 		return nil
 	}
 	v := *a + *b
+	if math.IsInf(v, 0) {
+		return nil
+	}
 	return &v
+}
+
+// ValidCost reports whether c is a known, usable dollar cost: present, finite
+// and not negative. An invalid cost is treated as unknown.
+func ValidCost(c *float64) bool {
+	return c != nil && *c >= 0 && !math.IsInf(*c, 0) && !math.IsNaN(*c)
+}
+
+// KnownCost returns c if it is a valid cost, otherwise nil (unknown).
+func KnownCost(c *float64) *float64 {
+	if !ValidCost(c) {
+		return nil
+	}
+	return c
 }
 
 func sumInt(a, b *int64) *int64 {

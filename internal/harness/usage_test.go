@@ -55,13 +55,15 @@ func TestCodexUsageFromRedactedTranscript(t *testing.T) {
 }
 
 func TestCodexUsageSumsTurnsAndKeepsMissingFieldsUnknown(t *testing.T) {
-	two := `{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":1}}
+	two := `{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":1}}
+{"type":"turn.started"}
 {"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":3}}
 `
 	usage := codexUsage([]byte(two))
 	wantTokens(t, usage, domain.Int64(15), nil, domain.Int64(5), nil)
 
-	zero := `{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}`
+	zero := `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}`
 	wantTokens(t, codexUsage([]byte(zero)), domain.Int64(0), domain.Int64(0), domain.Int64(0), domain.Int64(0))
 }
 
@@ -69,8 +71,9 @@ func TestCodexUsageIsUnknownWithoutAUsableCompletedTurn(t *testing.T) {
 	for name, transcript := range map[string]string{
 		"empty":               "",
 		"started only":        `{"type":"turn.started"}` + "\n",
-		"completed no usage":  `{"type":"turn.completed"}` + "\n",
-		"negative count":      `{"type":"turn.completed","usage":{"input_tokens":-1}}` + "\n",
+		"completed no usage":  `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed"}` + "\n",
+		"negative count":      `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":-1}}` + "\n",
+		"completed no start":  `{"type":"turn.completed","usage":{"input_tokens":1}}` + "\n",
 		"unterminated stream": `{"type":"turn.started"}` + "\n" + `{"type":"item.completed","item":{"id":"x"`,
 	} {
 		if usage := codexUsage([]byte(transcript)); usage != (domain.Usage{}) {
@@ -78,16 +81,20 @@ func TestCodexUsageIsUnknownWithoutAUsableCompletedTurn(t *testing.T) {
 		}
 	}
 	long := `{"type":"item.completed","item":{"aggregated_output":"` + strings.Repeat("x", 9<<20) + `"}}` + "\n" +
-		`{"type":"turn.completed","usage":{"input_tokens":7}}` + "\n"
+		`{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":7}}` + "\n"
 	if usage := codexUsage([]byte(long)); usage != (domain.Usage{}) {
 		t.Errorf("oversized line: usage = %+v, want all unknown", usage)
 	}
 }
 
 func TestCodexUsageUnreadableCompletionAfterValidTurnIsUnknown(t *testing.T) {
-	valid := `{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}` + "\n"
+	valid := `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}` + "\n"
 	for name, tail := range map[string]string{
 		"truncated completion": `{"type":"turn.completed","usage":{"input_tokens":4`,
+		"cut type":             `{"type":"turn.comple`,
+		"started no finish":    `{"type":"turn.started"}`,
+		"turn failed":          `{"type":"turn.started"}` + "\n" + `{"type":"turn.failed","error":{"message":"x"}}`,
+		"stray text line":      `warning: not json`,
 		"garbled completion":   `{"type":"turn.completed","usage":`,
 	} {
 		if usage := codexUsage([]byte(valid + tail)); usage != (domain.Usage{}) {
@@ -96,7 +103,7 @@ func TestCodexUsageUnreadableCompletionAfterValidTurnIsUnknown(t *testing.T) {
 	}
 	// A bad field poisons only that field; the others stay known.
 	for name, bad := range map[string]string{"string": `"bad"`, "fraction": `1.5`, "negative": `-3`, "null": `null`} {
-		usage := codexUsage([]byte(valid + `{"type":"turn.completed","usage":{"input_tokens":` + bad + `,"output_tokens":2}}` + "\n"))
+		usage := codexUsage([]byte(valid + `{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":` + bad + `,"output_tokens":2}}` + "\n"))
 		wantTokens(t, usage, nil, nil, domain.Int64(3), nil)
 		if t.Failed() {
 			t.Fatalf("%s input_tokens", name)
@@ -111,7 +118,7 @@ func TestCodexUsageUnreadableCompletionAfterValidTurnIsUnknown(t *testing.T) {
 func TestTokenSumsDetectOverflow(t *testing.T) {
 	max := int64(math.MaxInt64)
 	line := func(n int64) string {
-		return fmt.Sprintf(`{"type":"turn.completed","usage":{"input_tokens":%d,"output_tokens":1}}`+"\n", n)
+		return fmt.Sprintf(`{"type":"turn.started"}`+"\n"+`{"type":"turn.completed","usage":{"input_tokens":%d,"output_tokens":1}}`+"\n", n)
 	}
 	usage := codexUsage([]byte(line(max) + line(max) + line(2)))
 	wantTokens(t, usage, nil, nil, domain.Int64(3), nil)
@@ -215,5 +222,23 @@ func TestUsageCombineNeverTurnsUnknownIntoASmallerTotal(t *testing.T) {
 	}
 	if got := known.Combine(domain.Usage{}); got != (domain.Usage{}) {
 		t.Fatalf("known + unknown = %+v, want unknown", got)
+	}
+}
+
+func TestCostValidityKeepsBadCostsUnknown(t *testing.T) {
+	var target domain.Review
+	for name, body := range map[string]string{"negative": `{"is_error":true,"total_cost_usd":-0.25}`, "string": `{"is_error":true,"total_cost_usd":"x"}`} {
+		_, cost, _ := decodeClaudeWithUsage([]byte(body), &target)
+		if name == "negative" && cost != nil {
+			t.Errorf("%s cost parsed as %v, want unknown", name, *cost)
+		}
+	}
+	good, bad := domain.Usage{CostUSD: domain.Float(0.25)}, domain.Usage{CostUSD: domain.Float(-0.25)}
+	if got := good.Combine(bad); got.CostUSD != nil {
+		t.Fatalf("0.25 + -0.25 = %v, want unknown, not a known zero", *got.CostUSD)
+	}
+	huge := domain.Usage{CostUSD: domain.Float(math.MaxFloat64)}
+	if got := huge.Combine(huge); got.CostUSD != nil {
+		t.Fatalf("overflowing cost sum = %v, want unknown", *got.CostUSD)
 	}
 }
