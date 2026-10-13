@@ -197,7 +197,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 			return cycle, hashErr
 		}
 		cycle.Artifacts = append(cycle.Artifacts, reportArtifact)
-		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Transport: cycle.Execution.Transport, Turns: cycle.Execution.Turns, Usage: cycle.Execution.Usage}
+		metadata = harness.Metadata{Backend: cycle.Execution.Backend, Model: cycle.Execution.Model, Transport: cycle.Execution.Transport, Turns: cycle.Execution.Turns, Usage: cycle.Execution.Usage.Normalize()}
 	} else if invokeExecution {
 		executionCtx, cancel := context.WithTimeout(ctx, time.Duration(cycle.Candidate.Contract.Budget.MaxDurationSeconds)*time.Second)
 		report, metadata, err = executor.Execute(executionCtx, harness.ExecutionRequest{
@@ -263,7 +263,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 		cycle.Execution.Model = metadata.Model
 		cycle.Execution.Transport = metadata.Transport
 		cycle.Execution.Turns = metadata.Turns
-		cycle.Execution.Usage = metadata.Usage
+		cycle.Execution.Usage = metadata.Usage.Normalize()
 		cycle.Execution.ChangedPaths = changed
 		cycle.Execution.CompletedAt = s.now()
 		cycle.IdempotencyKeys["execution:attempt"] = "completed"

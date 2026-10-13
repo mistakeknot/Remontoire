@@ -476,8 +476,9 @@ func TestRecoveredStartedAttemptRestoresRecordedUsage(t *testing.T) {
 		usage   domain.Usage
 		wantErr string
 	}{
-		"unknown cost stays unknown": {usage: domain.Usage{InputTokens: domain.Int64(9)}},
-		"known cost over budget":     {usage: domain.Usage{CostUSD: domain.Float(1e6)}, wantErr: "cost"},
+		"unknown cost stays unknown":                                  {usage: domain.Usage{InputTokens: domain.Int64(9)}},
+		"negative recorded cost is unknown, not over or under budget": {usage: domain.Usage{CostUSD: domain.Float(-0.25), InputTokens: domain.Int64(9)}},
+		"known cost over budget":                                      {usage: domain.Usage{CostUSD: domain.Float(1e6)}, wantErr: "cost"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			service, kernel, _, executor, worktrees, _ := executionService(t)

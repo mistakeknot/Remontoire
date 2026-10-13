@@ -64,3 +64,16 @@ func sumInt(a, b *int64) *int64 {
 // Float and Int64 return a pointer to a reported value.
 func Float(v float64) *float64 { return &v }
 func Int64(v int64) *int64     { return &v }
+
+// Normalize returns u with every invalid field turned into unknown: a negative
+// or non-finite cost, or a negative token count. Records read back from disk
+// pass through it so a corrupt value is never persisted as reported spend.
+func (u Usage) Normalize() Usage {
+	u.CostUSD = KnownCost(u.CostUSD)
+	for _, f := range []**int64{&u.InputTokens, &u.CachedInputTokens, &u.OutputTokens, &u.ReasoningOutputTokens} {
+		if *f != nil && **f < 0 {
+			*f = nil
+		}
+	}
+	return u
+}

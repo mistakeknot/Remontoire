@@ -253,6 +253,9 @@ func decodeClaude(stdout []byte, target any) error {
 }
 
 func decodeClaudeWithUsage(stdout []byte, target any) (int, *float64, error) {
+	if err := strictjson.RejectDuplicateKeys(stdout); err != nil {
+		return 0, nil, fmt.Errorf("decode result envelope: %w", err)
+	}
 	var envelope struct {
 		StructuredOutput json.RawMessage `json:"structured_output"`
 		Result           string          `json:"result"`

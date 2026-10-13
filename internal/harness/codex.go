@@ -16,6 +16,7 @@ import (
 
 	"github.com/mistakeknot/Remontoire/internal/adapters"
 	"github.com/mistakeknot/Remontoire/internal/domain"
+	"github.com/mistakeknot/Remontoire/internal/strictjson"
 )
 
 type Codex struct {
@@ -52,7 +53,7 @@ func (c Codex) Judge(ctx context.Context, request JudgmentRequest) (domain.Judgm
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexRunUsage(result.Stdout, err), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Judgment{}, meta, err
 	}
@@ -81,7 +82,7 @@ func (c Codex) Execute(ctx context.Context, request ExecutionRequest) (Execution
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexRunUsage(result.Stdout, err), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return ExecutionReport{}, meta, err
 	}
@@ -111,7 +112,7 @@ func (c Codex) Review(ctx context.Context, request ReviewRequest) (domain.Review
 		"--color=never", "--json", "-",
 	)
 	result, transport, err := c.run(ctx, args, []byte(prompt))
-	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexUsage(result.Stdout), Transcript: result.Stdout, Stderr: result.Stderr}
+	meta := Metadata{Backend: c.Name(), Model: c.Model, Transport: transport, Turns: codexTurns(result.Stdout), Usage: codexRunUsage(result.Stdout, err), Transcript: result.Stdout, Stderr: result.Stderr}
 	if err != nil {
 		return domain.Review{}, meta, err
 	}
@@ -349,10 +350,21 @@ func codexTurns(transcript []byte) int {
 	return turns
 }
 
+// codexRunUsage is codexUsage for a finished run. A run that errored (including
+// a transcript cut short by the output limit) may hide spend after the last
+// event we saw, so its usage is unknown.
+func codexRunUsage(transcript []byte, runErr error) domain.Usage {
+	if runErr != nil {
+		return domain.Usage{}
+	}
+	return codexUsage(transcript)
+}
+
 // codexUsage sums the token counts Codex reports on each turn.completed event.
 // Codex reports no dollar cost, so CostUSD is always unknown. Usage is known
 // only for a stream that is complete: every line is a JSON event, every
-// turn.started has a turn.completed, and no turn failed, because anything else
+// turn.started is followed by its turn.completed before the next starts, no
+// event is untyped, no key repeats, and no turn failed, because anything else
 // may hide spend. A token field is known only if every completed turn reported
 // it as a non-negative integer and the sum did not overflow. Otherwise the
 // value is unknown, never zero or a smaller total.
@@ -360,7 +372,7 @@ func codexUsage(transcript []byte) domain.Usage {
 	names := [4]string{"input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"}
 	var sums [4]int64
 	var missing [4]bool
-	started, completed := 0, 0
+	open, completed := false, 0
 	scanner := bufio.NewScanner(bytes.NewReader(transcript))
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	for scanner.Scan() {
@@ -372,15 +384,22 @@ func codexUsage(transcript []byte) domain.Usage {
 			Type  string                     `json:"type"`
 			Usage map[string]json.RawMessage `json:"usage"`
 		}
-		if json.Unmarshal(line, &event) != nil {
+		if strictjson.RejectDuplicateKeys(line) != nil || json.Unmarshal(line, &event) != nil || event.Type == "" {
 			return domain.Usage{}
 		}
 		switch event.Type {
 		case "turn.started":
-			started++
+			if open {
+				return domain.Usage{}
+			}
+			open = true
 		case "turn.failed":
 			return domain.Usage{}
 		case "turn.completed":
+			if !open {
+				return domain.Usage{}
+			}
+			open = false
 			completed++
 			for i, name := range names {
 				var value int64
@@ -393,7 +412,7 @@ func codexUsage(transcript []byte) domain.Usage {
 			}
 		}
 	}
-	if completed == 0 || completed != started || scanner.Err() != nil {
+	if completed == 0 || open || scanner.Err() != nil {
 		return domain.Usage{}
 	}
 	var fields [4]*int64

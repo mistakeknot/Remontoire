@@ -242,3 +242,61 @@ func TestCostValidityKeepsBadCostsUnknown(t *testing.T) {
 		t.Fatalf("overflowing cost sum = %v, want unknown", *got.CostUSD)
 	}
 }
+
+func TestCodexUsageRejectsMisorderedAmbiguousAndUntypedStreams(t *testing.T) {
+	start, done := `{"type":"turn.started"}`+"\n", func(n int) string {
+		return fmt.Sprintf(`{"type":"turn.completed","usage":{"input_tokens":%d}}`+"\n", n)
+	}
+	for name, transcript := range map[string]string{
+		"equal counts but last turn open": start + done(10) + done(20) + start,
+		"nested start":                    start + start + done(1) + done(2),
+		"null event":                      start + "null\n" + done(1),
+		"untyped object":                  start + "{}\n" + done(1),
+		"duplicate field null then zero":  start + `{"type":"turn.completed","usage":{"input_tokens":null,"input_tokens":0}}` + "\n",
+		"duplicate type":                  start + `{"type":"turn.failed","type":"turn.completed","usage":{"input_tokens":1}}` + "\n",
+	} {
+		if usage := codexUsage([]byte(transcript)); usage != (domain.Usage{}) {
+			t.Errorf("%s: usage = %+v, want all unknown", name, usage)
+		}
+	}
+}
+
+func TestCodexUsageIsUnknownWhenTheRunErrored(t *testing.T) {
+	valid := []byte(`{"type":"turn.started"}` + "\n" + `{"type":"turn.completed","usage":{"input_tokens":10}}` + "\n")
+	if usage := codexRunUsage(valid, nil); usage.InputTokens == nil || *usage.InputTokens != 10 {
+		t.Fatalf("clean run usage = %+v, want 10 input tokens", usage)
+	}
+	if usage := codexRunUsage(valid, adapters.ErrOutputLimit); usage != (domain.Usage{}) {
+		t.Fatalf("truncated run usage = %+v, want all unknown", usage)
+	}
+	// End to end: a valid prefix plus ErrOutputLimit must not read as known usage.
+	runner := &fakeRunner{responses: []adapters.Result{{Stdout: valid, Stderr: []byte(poolStartMarker + "\n")}}, errors: []error{adapters.ErrOutputLimit}}
+	backend := Codex{Binary: "codex", Model: "gpt-5.4", PoolInputDir: t.TempDir(), Runner: runner}
+	_, meta, err := backend.Execute(context.Background(), ExecutionRequest{
+		Worktree: "/worktree", SchemaPath: "/schemas/execution.json", OutputPath: filepath.Join(t.TempDir(), "o.json"), Contract: harnessContract(),
+	})
+	if err == nil {
+		t.Fatal("want the output-limit error")
+	}
+	if meta.Usage != (domain.Usage{}) {
+		t.Fatalf("usage after output limit = %+v, want all unknown", meta.Usage)
+	}
+}
+
+func TestClaudeEnvelopeDuplicateCostKeysStayUnknown(t *testing.T) {
+	var target domain.Review
+	_, cost, err := decodeClaudeWithUsage([]byte(`{"total_cost_usd":null,"total_cost_usd":0,"is_error":true}`), &target)
+	if err == nil || cost != nil {
+		t.Fatalf("duplicate cost keys: cost = %v err = %v, want unknown cost and an error", cost, err)
+	}
+}
+
+func TestUsageNormalizeTurnsInvalidRecordedValuesIntoUnknown(t *testing.T) {
+	got := domain.Usage{CostUSD: domain.Float(-0.25), InputTokens: domain.Int64(-1), OutputTokens: domain.Int64(5)}.Normalize()
+	if got.CostUSD != nil || got.InputTokens != nil || got.OutputTokens == nil || *got.OutputTokens != 5 {
+		t.Fatalf("normalized = %+v, want bad cost and input unknown, output 5 kept", got)
+	}
+	if kept := (domain.Usage{CostUSD: domain.Float(0)}).Normalize(); kept.CostUSD == nil {
+		t.Fatal("a reported zero cost must stay known")
+	}
+}
