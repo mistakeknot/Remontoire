@@ -269,3 +269,15 @@ type Receipt struct {
 	DecisionHash    string     `json:"decision_hash"`
 	TerminalAt      time.Time  `json:"terminal_at"`
 }
+
+// NormalizeUsage turns every invalid recorded usage field into unknown, on the
+// execution record and on each judgment attempt. Cycle records read back from
+// state pass through it so a corrupt value is never persisted as reported spend.
+func (c *Cycle) NormalizeUsage() {
+	if c.Execution != nil {
+		c.Execution.Usage = c.Execution.Usage.Normalize()
+	}
+	for i := range c.JudgmentAttempts {
+		c.JudgmentAttempts[i].Usage = c.JudgmentAttempts[i].Usage.Normalize()
+	}
+}

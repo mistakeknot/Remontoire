@@ -524,3 +524,37 @@ func TestRecoveredStartedAttemptRestoresRecordedUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestCompletedExecutionResumeNormalizesRecordedUsage(t *testing.T) {
+	service, kernel, _, executor, _, _ := executionService(t)
+	cycle, err := service.Start(context.Background(), domain.ModeProposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Approve(context.Background(), cycle.ID, "mk"); err != nil {
+		t.Fatal(err)
+	}
+	cycle, err = service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cycle.IdempotencyKeys["execution:attempt"] != "completed" || executor.calls != 1 {
+		t.Fatalf("keys=%#v executor=%d", cycle.IdempotencyKeys, executor.calls)
+	}
+	cycle.Stage = domain.StageExecuting
+	cycle.Execution.Usage = domain.Usage{CostUSD: domain.Float(-0.25), InputTokens: domain.Int64(-4), OutputTokens: domain.Int64(9)}
+	kernel.cycles[cycle.ID] = cycle
+
+	got, err := service.Execute(context.Background(), cycle.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executor.calls != 1 {
+		t.Fatal("completed attempt re-invoked the executor")
+	}
+	for label, usage := range map[string]domain.Usage{"returned": got.Execution.Usage, "persisted": kernel.cycles[cycle.ID].Execution.Usage} {
+		if usage.CostUSD != nil || usage.InputTokens != nil || usage.OutputTokens == nil || *usage.OutputTokens != 9 {
+			t.Fatalf("%s usage = %+v, want invalid cost and input unknown, output 9 kept", label, usage)
+		}
+	}
+}

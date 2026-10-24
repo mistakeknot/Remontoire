@@ -211,10 +211,22 @@ func (s *Service) ensureStageEvent(ctx context.Context, cycle *domain.Cycle) err
 	return s.persist(ctx, cycle)
 }
 
+// getCycle reads the canonical cycle state and normalizes recorded usage, so
+// a resumed cycle never carries an invalid cost or token count forward.
+func (s *Service) getCycle(ctx context.Context, cycleID string) (domain.Cycle, error) {
+	cycle, err := s.Kernel.GetCycle(ctx, cycleID)
+	if err != nil {
+		return cycle, err
+	}
+	cycle.NormalizeUsage()
+	return cycle, nil
+}
+
 func (s *Service) persist(ctx context.Context, cycle *domain.Cycle) error {
 	if cycle.IdempotencyKeys == nil {
 		cycle.IdempotencyKeys = map[string]string{}
 	}
+	cycle.NormalizeUsage()
 	if err := s.Kernel.SetCycle(ctx, *cycle); err != nil {
 		return fmt.Errorf("persist canonical cycle state: %w", err)
 	}

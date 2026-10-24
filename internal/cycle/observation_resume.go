@@ -23,7 +23,7 @@ func (s *Service) ResumeObservation(ctx context.Context, cycleID string) (cycle 
 	if err := s.validate(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -39,7 +39,7 @@ func (s *Service) ResumeObservation(ctx context.Context, cycleID string) (cycle 
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}

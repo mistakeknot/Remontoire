@@ -28,7 +28,7 @@ func (s *Service) Approve(ctx context.Context, cycleID, actor string) (cycle dom
 	if err := s.validate(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -44,7 +44,7 @@ func (s *Service) Approve(ctx context.Context, cycleID, actor string) (cycle dom
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -84,7 +84,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 	if err := s.validateExecution(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -103,7 +103,7 @@ func (s *Service) Execute(ctx context.Context, cycleID string) (cycle domain.Cyc
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}

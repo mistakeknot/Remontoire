@@ -264,6 +264,9 @@ func decodeClaudeWithUsage(stdout []byte, target any) (int, *float64, error) {
 		NumTurns         int             `json:"num_turns"`
 		TotalCostUSD     *float64        `json:"total_cost_usd"`
 	}
+	if err := strictjson.RejectCaseAliases(stdout, &envelope); err != nil {
+		return 0, nil, fmt.Errorf("decode result envelope: %w", err)
+	}
 	if err := json.Unmarshal(stdout, &envelope); err != nil {
 		return 0, nil, fmt.Errorf("decode result envelope: %w", err)
 	}

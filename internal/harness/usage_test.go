@@ -300,3 +300,28 @@ func TestUsageNormalizeTurnsInvalidRecordedValuesIntoUnknown(t *testing.T) {
 		t.Fatal("a reported zero cost must stay known")
 	}
 }
+
+func TestClaudeEnvelopeCaseVariantCostKeysStayUnknown(t *testing.T) {
+	var target domain.Review
+	_, cost, err := decodeClaudeWithUsage([]byte(`{"total_cost_usd":null,"TOTAL_COST_USD":0,"is_error":true}`), &target)
+	if err == nil || cost != nil {
+		t.Fatalf("case-variant cost keys: cost = %v err = %v, want unknown cost and an error", cost, err)
+	}
+}
+
+func TestCodexUsageRejectsCaseVariantKeys(t *testing.T) {
+	stream := func(completed string) []byte {
+		return []byte(`{"type":"turn.started"}` + "\n" + completed + "\n")
+	}
+	for name, transcript := range map[string][]byte{
+		"type":  stream(`{"type":"turn.failed","TYPE":"turn.completed","usage":{"input_tokens":5}}`),
+		"usage": stream(`{"type":"turn.completed","USAGE":{"input_tokens":5}}`),
+	} {
+		if got := codexUsage(transcript); got != (domain.Usage{}) {
+			t.Fatalf("%s: usage = %+v, want all unknown", name, got)
+		}
+	}
+	if got := codexUsage(stream(`{"type":"turn.completed","usage":{"input_tokens":5}}`)); got.InputTokens == nil || *got.InputTokens != 5 {
+		t.Fatalf("exact keys: usage = %+v, want 5 input tokens", got)
+	}
+}

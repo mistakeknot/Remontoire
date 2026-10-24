@@ -384,7 +384,7 @@ func codexUsage(transcript []byte) domain.Usage {
 			Type  string                     `json:"type"`
 			Usage map[string]json.RawMessage `json:"usage"`
 		}
-		if strictjson.RejectDuplicateKeys(line) != nil || json.Unmarshal(line, &event) != nil || event.Type == "" {
+		if strictjson.RejectDuplicateKeys(line) != nil || strictjson.RejectCaseAliases(line, &event) != nil || json.Unmarshal(line, &event) != nil || event.Type == "" {
 			return domain.Usage{}
 		}
 		switch event.Type {

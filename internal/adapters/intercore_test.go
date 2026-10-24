@@ -313,3 +313,57 @@ func TestIntercoreReadsCurrentRunPhase(t *testing.T) {
 		t.Fatalf("args = %#v, want %#v", got, want)
 	}
 }
+
+func TestIntercoreGetCycleRejectsAmbiguousAccountingFields(t *testing.T) {
+	for name, state := range map[string]string{
+		"duplicate execution token": `{"id":"cycle-1","execution":{"backend":"codex","input_tokens":null,"input_tokens":0}}`,
+		"duplicate attempt cost":    `{"id":"cycle-1","judgment_attempts":[{"number":1,"cost_usd":null,"cost_usd":0}]}`,
+		"case-variant token":        `{"id":"cycle-1","execution":{"backend":"codex","input_tokens":null,"INPUT_TOKENS":0}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner := &recordingRunner{}
+			runner.queue(state)
+			ic := Intercore{Binary: "ic", Runner: runner}
+			if _, err := ic.GetCycle(context.Background(), "cycle-1"); err == nil || !strings.Contains(err.Error(), "decode cycle state") {
+				t.Fatalf("error = %v, want a cycle state decode error", err)
+			}
+		})
+	}
+}
+
+func TestIntercoreGetCycleRecoversUsageFromSerializedRecords(t *testing.T) {
+	unknown := domain.Cycle{
+		SchemaVersion: domain.CycleSchemaV1, ID: "cycle-1",
+		Execution:        &domain.ExecutionRecord{Backend: "codex", Usage: domain.Usage{OutputTokens: domain.Int64(7)}},
+		JudgmentAttempts: []domain.JudgmentAttempt{{Number: 1, Usage: domain.Usage{ReasoningOutputTokens: domain.Int64(0)}}},
+	}
+	serialized, err := json.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &recordingRunner{}
+	runner.queue(string(serialized))
+	got, err := Intercore{Binary: "ic", Runner: runner}.GetCycle(context.Background(), "cycle-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Execution.InputTokens != nil || got.Execution.CostUSD != nil || got.Execution.OutputTokens == nil || *got.Execution.OutputTokens != 7 {
+		t.Fatalf("execution usage = %+v, want unknown input and cost, 7 output tokens", got.Execution.Usage)
+	}
+	if attempt := got.JudgmentAttempts[0]; attempt.InputTokens != nil || attempt.ReasoningOutputTokens == nil || *attempt.ReasoningOutputTokens != 0 {
+		t.Fatalf("attempt usage = %+v, want unknown input and a reported zero reasoning count", attempt.Usage)
+	}
+
+	invalid := `{"id":"cycle-1","execution":{"backend":"codex","cost_usd":-0.5,"input_tokens":-3,"output_tokens":4},"judgment_attempts":[{"number":1,"cost_usd":-1,"input_tokens":2}]}`
+	runner.queue(invalid)
+	got, err = Intercore{Binary: "ic", Runner: runner}.GetCycle(context.Background(), "cycle-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Execution.CostUSD != nil || got.Execution.InputTokens != nil || got.Execution.OutputTokens == nil || *got.Execution.OutputTokens != 4 {
+		t.Fatalf("execution usage = %+v, want invalid cost and input unknown, output kept", got.Execution.Usage)
+	}
+	if attempt := got.JudgmentAttempts[0]; attempt.CostUSD != nil || attempt.InputTokens == nil || *attempt.InputTokens != 2 {
+		t.Fatalf("attempt usage = %+v, want invalid cost unknown, input kept", attempt.Usage)
+	}
+}

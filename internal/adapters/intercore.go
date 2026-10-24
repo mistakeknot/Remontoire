@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mistakeknot/Remontoire/internal/domain"
+	"github.com/mistakeknot/Remontoire/internal/strictjson"
 )
 
 var (
@@ -81,9 +82,18 @@ func (c Intercore) GetCycle(ctx context.Context, cycleID string) (domain.Cycle, 
 		return domain.Cycle{}, err
 	}
 	var cycle domain.Cycle
+	// A repeated or case-aliased key (say input_tokens null, then 0) would
+	// decode as a reported zero, so reject it before the decoder picks one.
+	if err := strictjson.RejectDuplicateKeys(result.Stdout); err != nil {
+		return domain.Cycle{}, fmt.Errorf("decode cycle state: %w", err)
+	}
+	if err := strictjson.RejectCaseAliases(result.Stdout, &cycle); err != nil {
+		return domain.Cycle{}, fmt.Errorf("decode cycle state: %w", err)
+	}
 	if err := json.Unmarshal(result.Stdout, &cycle); err != nil {
 		return domain.Cycle{}, fmt.Errorf("decode cycle state: %w", err)
 	}
+	cycle.NormalizeUsage()
 	return cycle, nil
 }
 

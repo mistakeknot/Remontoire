@@ -991,3 +991,33 @@ func ExampleObservation() {
 	fmt.Println(strings.Contains(string(data), "remontoire.observation/v1"))
 	// Output: true
 }
+
+func TestResumeObservationNormalizesReloadedJudgmentAttemptUsage(t *testing.T) {
+	service, kernel, _ := testService(t, domain.ModeShadow)
+	completed, err := service.Start(context.Background(), domain.ModeShadow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(completed.JudgmentAttempts) == 0 {
+		t.Fatal("test setup: Start recorded no judgment attempt")
+	}
+	completed.Stage = domain.StageObserving
+	delete(completed.IdempotencyKeys, "run:rank")
+	delete(completed.IdempotencyKeys, "event:no_op")
+	delete(completed.IdempotencyKeys, "event:completed")
+	completed.JudgmentAttempts[0].Usage = domain.Usage{CostUSD: domain.Float(-1), InputTokens: domain.Int64(-2), OutputTokens: domain.Int64(5)}
+	kernel.cycles[completed.ID] = completed
+	kernel.phase = "observe"
+	kernel.runStatus = "active"
+	service.Judge = &failingJudge{}
+
+	resumed, err := service.ResumeObservation(context.Background(), completed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, attempt := range map[string]domain.JudgmentAttempt{"returned": resumed.JudgmentAttempts[0], "persisted": kernel.cycles[completed.ID].JudgmentAttempts[0]} {
+		if attempt.CostUSD != nil || attempt.InputTokens != nil || attempt.OutputTokens == nil || *attempt.OutputTokens != 5 {
+			t.Fatalf("%s attempt usage = %+v, want invalid cost and input unknown, output 5 kept", label, attempt.Usage)
+		}
+	}
+}
