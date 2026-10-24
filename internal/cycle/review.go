@@ -46,7 +46,7 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 	if err := s.validateReview(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -66,7 +66,7 @@ func (s *Service) Review(ctx context.Context, cycleID string) (cycle domain.Cycl
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -204,7 +204,7 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 	if err := s.validate(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -224,7 +224,7 @@ func (s *Service) Compound(ctx context.Context, cycleID string) (cycle domain.Cy
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}

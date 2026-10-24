@@ -21,7 +21,7 @@ func (s *Service) Decline(ctx context.Context, cycleID, actor, reason string) (c
 	if err := s.validate(); err != nil {
 		return domain.Cycle{}, err
 	}
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
@@ -37,7 +37,7 @@ func (s *Service) Decline(ctx context.Context, cycleID, actor, reason string) (c
 			err = releaseErr
 		}
 	}()
-	cycle, err = s.Kernel.GetCycle(ctx, cycleID)
+	cycle, err = s.getCycle(ctx, cycleID)
 	if err != nil {
 		return domain.Cycle{}, err
 	}
