@@ -91,3 +91,22 @@ func safeEnvironment() ([]string, func(), error) {
 func SafeEnvironment() ([]string, func(), error) {
 	return safeEnvironment()
 }
+
+// poolEnvironment carries the caller's BB context to admission only. An
+// inherited ID is a claim, not proof: BB validates the live thread, environment
+// and primary host before starting the provider. Never use this for model or
+// benchmark children, and never discover or substitute another thread ID.
+func poolEnvironment(base []string) []string {
+	allowed := map[string]bool{
+		"BB_THREAD_ID": true, "BB_PROJECT_ID": true, "BB_ENVIRONMENT_ID": true,
+		"BB_CLI": true, "BB_SERVER_URL": true, "BB_HOST_DAEMON_PORT": true,
+	}
+	result := append([]string(nil), base...)
+	for _, entry := range environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && allowed[key] {
+			result = append(result, entry)
+		}
+	}
+	return result
+}
