@@ -147,6 +147,12 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 		return adapters.Result{}, "", fmt.Errorf("codex environment: %w", err)
 	}
 	defer cleanup()
+	// The pool CLI derives caller cwd from its process, independently of the
+	// provider's --cd workspace. Do not substitute PWD or a configured repo.
+	callerDir, err := os.Getwd()
+	if err != nil {
+		return adapters.Result{}, "", fmt.Errorf("codex caller directory: %w", err)
+	}
 	stdinPath, err := writePoolInput(c.PoolInputDir, stdin)
 	if err != nil {
 		return adapters.Result{}, "", fmt.Errorf("codex pool input: %w", err)
@@ -156,7 +162,7 @@ func (c Codex) run(ctx context.Context, args []string, stdin []byte) (adapters.R
 	poolArgs = append(poolArgs, args...)
 	poolCtx, cancelPool := context.WithTimeout(ctx, poolExecTimeout)
 	result, poolErr := c.Runner.Run(poolCtx, adapters.Invocation{
-		Name: "bb", Args: poolArgs, Env: environment, MaxOutputBytes: 8 << 20,
+		Name: "bb", Args: poolArgs, Dir: callerDir, Env: poolEnvironment(environment), MaxOutputBytes: 8 << 20,
 	})
 	cancelPool()
 	transport := CodexTransportPoolUnconfirmed
